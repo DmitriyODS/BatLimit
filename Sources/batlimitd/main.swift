@@ -1,0 +1,365 @@
+import Foundation
+import BatLimitCore
+
+// Демон batlimitd. Работает под root как LaunchDaemon, единственный, кто пишет в SMC.
+// Пользовательские процессы (batlimit, BatLimitMenu) только кладут config.json
+// и читают status.json — сами привилегий не имеют.
+
+private func log(_ message: String) {
+    let ts = ISO8601DateFormatter().string(from: Date())
+    print("[\(ts)] \(message)")
+    fflush(stdout)
+}
+
+final class Daemon {
+    private let controller: ChargingController
+
+    /// Фаза авто-режима. true — заряжаем до `high`, false — ждём разряда до `low`.
+    /// Хранение фазы между тиками и даёт гистерезис: в коридоре low…high
+    /// направление не меняется, поэтому реле не дёргается на каждом проценте.
+    private var phaseCharging = false
+
+    /// Разовая зарядка по кнопке: зеркало `config.chargeNow`. Живёт до
+    /// достижения `high`, до смены режима или пока пользователь не снимет флаг.
+    private var oneShot = false
+
+    /// Сколько ждём, пока контроллер применит команду, прежде чем перестать
+    /// говорить «применяется». На M4 переоценка занимает 45–50 с, берём с запасом.
+    private static let settleWindow: TimeInterval = 90
+
+    /// Что мы просили у контроллера в прошлый раз и когда просьба изменилась.
+    private var requestedInhibit: Bool?
+    private var requestChangedAt = Date.distantPast
+
+    private var lastMode: Mode?
+    /// Последняя запись про разовую зарядку: если конфиг вдруг не пишется,
+    /// одно и то же сообщение иначе уходило бы в лог каждую секунду.
+    private var lastOneShotNote: String?
+    private var lastLED: ChargingController.LED?
+    private var lastHistoryWrite = Date.distantPast
+    private var lastTrim = Date.distantPast
+    private var lastStatusWrite = Date.distantPast
+    private var lastWrittenStatus: String?
+    private var lastError: String?
+
+    init() throws {
+        controller = try ChargingController()
+        log("Запуск. SMC API: \(controller.api.rawValue)")
+        if controller.api == .unknown {
+            log("ВНИМАНИЕ: подходящих SMC-ключей нет, управлять зарядкой не смогу")
+        }
+    }
+
+    // MARK: - Основной цикл
+
+    func tick() {
+        var cfg = Config.load()
+        guard let bat = Battery.read() else {
+            lastError = "не читается AppleSmartBattery"
+            log("Ошибка: \(lastError!)")
+            return
+        }
+
+        updateOneShot(cfg: &cfg, battery: bat)
+
+        // Инициализация фазы при первом тике и при входе в авто-режим.
+        if lastMode == nil || lastMode != cfg.mode {
+            phaseCharging = bat.percentage <= cfg.low
+        }
+        lastMode = cfg.mode
+
+        let allowed = decide(cfg: cfg, battery: bat)
+        let state = apply(allowed: allowed, battery: bat)
+        applyLED(cfg: cfg, inhibited: state.effective, battery: bat)
+        recordHistory(bat)
+        writeStatus(cfg: cfg, bat: bat, allowed: allowed, state: state)
+    }
+
+    /// Разовая зарядка — это состояние в конфиге, а не одноразовое событие.
+    ///
+    /// Раньше демон «съедал» `chargeNow` на первом же тике и дальше жил своим
+    /// флагом, который гасила только смена режима. Из-за этого «Не заряжать»,
+    /// нажатое в режиме `hold` (то есть без смены режима), ничего не отменяло —
+    /// зарядка спокойно шла до верхнего порога. Теперь флаг живёт в конфиге,
+    /// любая команда, снявшая его, отменяет разовую зарядку, а гасит флаг
+    /// демон — сам, по завершении.
+    private func updateOneShot(cfg: inout Config, battery bat: BatteryInfo) {
+        let requested = cfg.chargeNow
+        var want = requested
+        var note: String?
+
+        if want, let last = lastMode, last != cfg.mode {
+            want = false
+            note = "Смена режима отменила разовую зарядку"
+        }
+        if want && bat.percentage >= cfg.high {
+            want = false
+            note = oneShot ? "Разовая зарядка завершена на \(bat.percentage)%"
+                           : "Заряжать до \(cfg.high)% нечего: уже \(bat.percentage)%"
+        }
+        if !requested && oneShot {
+            note = "Разовая зарядка отменена"
+        }
+        if want && !oneShot {
+            note = "Получена команда: зарядить до \(cfg.high)%"
+        }
+        if let note, note != lastOneShotNote { log(note) }
+        lastOneShotNote = note
+        oneShot = want
+
+        guard cfg.chargeNow != want else { return }
+        cfg.chargeNow = want
+        try? cfg.save()
+        // Мы под root: без этого перезаписанный конфиг остался бы
+        // с группой wheel, и приложение больше не смогло бы его менять.
+        restoreConfigOwnership()
+    }
+
+    /// Единственное место, где решается, можно ли заряжать.
+    private func decide(cfg: Config, battery bat: BatteryInfo) -> Bool {
+        if oneShot { return true }
+
+        switch cfg.mode {
+        case .off:
+            return true
+        case .hold:
+            return false
+        case .auto:
+            if bat.percentage <= cfg.low {
+                phaseCharging = true
+            } else if bat.percentage >= cfg.high {
+                phaseCharging = false
+            }
+            return phaseCharging
+        }
+    }
+
+    /// Что мы попросили у контроллера и что он на самом деле делает.
+    struct ChargeState {
+        let requested: Bool   // нужна ли блокировка по нашему решению
+        let effective: Bool   // держим ли зарядку на самом деле
+        let settling: Bool    // команда отправлена, но ещё не применена
+    }
+
+    /// Приводит SMC к нужному состоянию и возвращает, что происходит на самом деле.
+    ///
+    /// Записанный ключ — это команда, а не факт: контроллер заряда перечитывает
+    /// его на своей периодической переоценке (на M4 это ~45–50 с), поэтому между
+    /// записью и остановкой или стартом зарядки проходит до минуты. Раньше здесь
+    /// возвращалось желаемое значение, и статус уверенно писал «заблокировано»,
+    /// пока батарея брала 4 А. Факт берём из `NotChargingReason`: бит 55 —
+    /// зарядку держим мы.
+    ///
+    /// Ключ сверяем каждый тик, а не только при смене решения: после сна он
+    /// может сброситься сам.
+    private func apply(allowed: Bool, battery bat: BatteryInfo) -> ChargeState {
+        let shouldInhibit = !allowed
+        if requestedInhibit != shouldInhibit {
+            requestedInhibit = shouldInhibit
+            requestChangedAt = Date()
+        }
+        guard controller.api != .unknown else {
+            return ChargeState(requested: false, effective: false, settling: false)
+        }
+        do {
+            if try controller.isInhibitRequested() != shouldInhibit {
+                try controller.setChargingAllowed(allowed)
+                log(allowed ? "Зарядка разрешена — контроллер применит в течение ~минуты"
+                            : "Зарядка заблокирована — контроллер применит в течение ~минуты")
+            }
+            lastError = nil
+        } catch {
+            lastError = "\(error)"
+            log("Ошибка SMC: \(error)")
+            return ChargeState(requested: shouldInhibit, effective: shouldInhibit,
+                               settling: false)
+        }
+        // Без адаптера блокировать нечего, а `NotChargingReason` там залипает
+        // на последнем значении — сверять его на батарее бессмысленно.
+        let effective = bat.isPluggedIn ? bat.ourInhibitActive : shouldInhibit
+        // Ждём применения только ограниченное время: расхождение может и не
+        // сойтись (например, батарея полна и контроллер называет своей причиной
+        // именно это), а вечный значок «применяется» хуже честного факта.
+        let settling = effective != shouldInhibit
+            && Date().timeIntervalSince(requestChangedAt) < Daemon.settleWindow
+        return ChargeState(requested: shouldInhibit, effective: effective, settling: settling)
+    }
+
+    /// Зелёный светодиод MagSafe = «питание есть, батарею намеренно не заряжаем».
+    private func applyLED(cfg: Config, inhibited: Bool, battery bat: BatteryInfo) {
+        guard controller.hasMagSafeLED else { return }
+        let desired: ChargingController.LED =
+            (cfg.magsafeLED && inhibited && bat.isPluggedIn) ? .green : .auto
+
+        if desired == .green {
+            // Систему приходится переубеждать: она возвращает свой цвет,
+            // поэтому сверяем фактическое значение на каждом тике.
+            if controller.currentLED() != .green {
+                try? controller.setLED(.green)
+                if lastLED != .green { log("Индикатор MagSafe: зелёный") }
+            }
+        } else if lastLED != .auto {
+            // Обратно отдаём управление системе один раз, иначе будем
+            // бесконечно спорить с ней о цвете.
+            try? controller.setLED(.auto)
+            log("Индикатор MagSafe: возвращён системе")
+        }
+        lastLED = desired
+    }
+
+    /// Точка в истории заряда — раз в минуту, для графика в панели мониторинга.
+    private func recordHistory(_ bat: BatteryInfo) {
+        let now = Date()
+        guard now.timeIntervalSince(lastHistoryWrite) >= 60 else { return }
+        lastHistoryWrite = now
+        History.append(HistoryPoint(t: now.timeIntervalSince1970,
+                                    p: bat.percentage,
+                                    c: bat.isCharging,
+                                    a: bat.isPluggedIn))
+        if now.timeIntervalSince(lastTrim) > 3600 {
+            lastTrim = now
+            History.trim()
+        }
+    }
+
+    private func writeStatus(cfg: Config, bat: BatteryInfo, allowed: Bool, state: ChargeState) {
+        let status = Status(percentage: bat.percentage,
+                            isCharging: bat.isCharging,
+                            isPluggedIn: bat.isPluggedIn,
+                            inhibited: state.effective,
+                            settling: state.settling,
+                            systemLimitActive: bat.systemLimitActive,
+                            mode: cfg.mode,
+                            low: cfg.low,
+                            high: cfg.high,
+                            chargeNow: oneShot,
+                            phase: describePhase(cfg: cfg, bat: bat, allowed: allowed,
+                                                 state: state),
+                            api: controller.api.rawValue,
+                            minutesRemaining: bat.isCharging ? bat.minutesToFull : bat.minutesToEmpty,
+                            cycleCount: bat.cycleCount,
+                            error: lastError,
+                            updatedAt: Date())
+
+        // Пишем только при изменении сути либо раз в 15 секунд — чтобы статус
+        // оставался «свежим» для клиентов, но не молотить диск вхолостую.
+        let fingerprint = "\(status.percentage)|\(status.isCharging)|\(status.isPluggedIn)|"
+            + "\(status.inhibited)|\(status.settling ?? false)|\(status.mode)|"
+            + "\(status.low)|\(status.high)|\(status.chargeNow)|"
+            + "\(status.phase)|\(status.error ?? "")"
+        let stale = Date().timeIntervalSince(lastStatusWrite) > 15
+        guard fingerprint != lastWrittenStatus || stale else { return }
+
+        do {
+            try status.save()
+            lastWrittenStatus = fingerprint
+            lastStatusWrite = Date()
+        } catch {
+            log("Не удалось записать статус: \(error)")
+        }
+    }
+
+    private func describePhase(cfg: Config, bat: BatteryInfo, allowed: Bool,
+                               state: ChargeState) -> String {
+        let source = bat.isPluggedIn ? "от сети" : "от батареи"
+        if controller.api == .unknown { return "SMC-ключи не найдены" }
+
+        // Контроллер применяет команду не сразу — не делаем вид, что уже готово.
+        if state.settling {
+            return allowed ? "\(source), снимаю блокировку — применяется…"
+                           : "\(source), блокирую зарядку — применяется…"
+        }
+        // Системный лимит macOS — второй, независимый замок: он держит зарядку
+        // своим битом 24 и нашим ключом не открывается.
+        if allowed && bat.isPluggedIn && bat.systemLimitActive && bat.percentage < cfg.high {
+            return "от сети, зарядку держит системный лимит macOS"
+        }
+        // Окно ожидания вышло, а запрет так и не подействовал — это аномалия,
+        // и молчать о ней нельзя: пользователь видит, что батарея заряжается.
+        if state.requested && !state.effective && bat.isCharging {
+            return "от сети, зарядка идёт, хотя запрет выставлен"
+        }
+        if oneShot { return "\(source), заряжаю до \(cfg.high)% (разово)" }
+
+        switch cfg.mode {
+        case .off:
+            return "\(source), не вмешиваюсь"
+        case .hold:
+            return bat.isPluggedIn ? "от сети, зарядка заблокирована" : "от батареи, зарядка заблокирована"
+        case .auto:
+            if allowed {
+                return "\(source), заряжаю до \(cfg.high)%"
+            } else {
+                return "\(source), жду разряда до \(cfg.low)%"
+            }
+        }
+    }
+
+    /// Конфиг принадлежит root:admin — его правят приложение и CLI без sudo.
+    private func restoreConfigOwnership() {
+        try? FileManager.default.setAttributes([
+            .ownerAccountName: "root",
+            .groupOwnerAccountName: "admin",
+            .posixPermissions: 0o664,
+        ], ofItemAtPath: Paths.config)
+    }
+
+    // MARK: - Завершение
+
+    /// При остановке всегда снимаем блокировку: демон не должен оставить
+    /// ноутбук с навсегда запрещённой зарядкой.
+    func shutdown() {
+        log("Останов: снимаю блокировку зарядки")
+        if controller.api != .unknown {
+            try? controller.setChargingAllowed(true)
+        }
+        if controller.hasMagSafeLED {
+            try? controller.setLED(.auto)
+        }
+        if var status = Status.load() {
+            status.inhibited = false
+            status.settling = false
+            status.phase = "демон остановлен"
+            status.updatedAt = Date()
+            try? status.save()
+        }
+    }
+}
+
+// MARK: - Точка входа
+
+guard getuid() == 0 else {
+    FileHandle.standardError.write("batlimitd должен работать от root\n".data(using: .utf8)!)
+    exit(1)
+}
+
+let daemon: Daemon
+do {
+    daemon = try Daemon()
+} catch {
+    FileHandle.standardError.write("Не удалось инициализировать SMC: \(error)\n".data(using: .utf8)!)
+    exit(1)
+}
+
+// Сигналы обрабатываем через DispatchSource, а не через signal(): обработчик
+// сигнала не может безопасно ходить в IOKit и файловую систему.
+signal(SIGTERM, SIG_IGN)
+signal(SIGINT, SIG_IGN)
+// Ссылку держим в глобальной переменной: иначе источники освободятся сразу
+// после создания и сигналы перестанут обрабатываться.
+let signalSources: [DispatchSourceSignal] = [SIGTERM, SIGINT].map { sig in
+    let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+    src.setEventHandler {
+        daemon.shutdown()
+        exit(0)
+    }
+    src.resume()
+    return src
+}
+
+let timer = DispatchSource.makeTimerSource(queue: .main)
+timer.schedule(deadline: .now(), repeating: 1.0)
+timer.setEventHandler { daemon.tick() }
+timer.resume()
+
+dispatchMain()

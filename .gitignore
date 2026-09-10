@@ -1,0 +1,10 @@
+.build/
+build/
+.DS_Store
+*.xcodeproj
+
+# Мусор от прямых вызовов swiftc в корне пакета
+*.o
+*.d
+*.dia
+*.swiftdeps

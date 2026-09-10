@@ -5,8 +5,10 @@ import BatLimitCore
 // Пользовательские процессы (batlimit, BatLimitMenu) только кладут config.json
 // и читают status.json — сами привилегий не имеют.
 
+private let logTimestampFormatter = ISO8601DateFormatter()
+
 private func log(_ message: String) {
-    let ts = ISO8601DateFormatter().string(from: Date())
+    let ts = logTimestampFormatter.string(from: Date())
     print("[\(ts)] \(message)")
     fflush(stdout)
 }
@@ -36,6 +38,12 @@ final class Daemon {
     /// одно и то же сообщение иначе уходило бы в лог каждую секунду.
     private var lastOneShotNote: String?
     private var lastLED: ChargingController.LED?
+    /// Цвет, к которому мы клонимся, и с какого момента. Меняем не сразу:
+    /// см. `applyLED`.
+    private var pendingLED: ChargingController.LED?
+    private var pendingLEDSince = Date.distantPast
+    /// Сколько желаемый цвет должен продержаться, прежде чем его применять.
+    private static let ledDebounce: TimeInterval = 5
     private var lastHistoryWrite = Date.distantPast
     private var lastTrim = Date.distantPast
     private var lastStatusWrite = Date.distantPast
@@ -55,8 +63,9 @@ final class Daemon {
     func tick() {
         var cfg = Config.load()
         guard let bat = Battery.read() else {
-            lastError = "не читается AppleSmartBattery"
-            log("Ошибка: \(lastError!)")
+            let message = "не читается AppleSmartBattery"
+            if lastError != message { log("Ошибка: \(message)") }
+            lastError = message
             return
         }
 
@@ -70,7 +79,7 @@ final class Daemon {
 
         let allowed = decide(cfg: cfg, battery: bat)
         let state = apply(allowed: allowed, battery: bat)
-        applyLED(cfg: cfg, inhibited: state.effective, battery: bat)
+        applyLED(cfg: cfg, requested: state.requested, battery: bat)
         recordHistory(bat)
         writeStatus(cfg: cfg, bat: bat, allowed: allowed, state: state)
     }
@@ -169,9 +178,16 @@ final class Daemon {
             }
             lastError = nil
         } catch {
-            lastError = "\(error)"
-            log("Ошибка SMC: \(error)")
-            return ChargeState(requested: shouldInhibit, effective: shouldInhibit,
+            // Одна и та же ошибка на каждом тике залила бы лог сотней тысяч
+            // одинаковых строк за сутки — пишем только смену состояния.
+            let message = "\(error)"
+            if lastError != message { log("Ошибка SMC: \(message)") }
+            lastError = message
+            // И не выдаём желаемое за действительное: запись не прошла, значит
+            // зарядку держит не наш ключ. Без адаптера считаем, что не держим:
+            // там `NotChargingReason` залипает на последнем значении.
+            return ChargeState(requested: shouldInhibit,
+                               effective: bat.isPluggedIn ? bat.ourInhibitActive : false,
                                settling: false)
         }
         // Без адаптера блокировать нечего, а `NotChargingReason` там залипает
@@ -186,18 +202,38 @@ final class Daemon {
     }
 
     /// Зелёный светодиод MagSafe = «питание есть, батарею намеренно не заряжаем».
-    private func applyLED(cfg: Config, inhibited: Bool, battery bat: BatteryInfo) {
+    ///
+    /// Смотрим на наше решение (`requested`), а не на факт из
+    /// `NotChargingReason`. Бит 55 — живое показание контроллера: на
+    /// переподключении адаптера и на каждой его переоценке он скачет по
+    /// несколько раз за секунду, и светодиод скакал вместе с ним, каждый раз
+    /// записывая SMC. За одно утро в логе набегало под 240 переключений.
+    /// Смысл зелёного — «BatLimit намеренно удерживает зарядку», а это именно
+    /// решение, и оно меняется только со сменой режима.
+    ///
+    /// Выдержка — страховка на остальное: дребезг `ExternalConnected` при
+    /// неплотном разъёме иначе дал бы ту же картину.
+    private func applyLED(cfg: Config, requested: Bool, battery bat: BatteryInfo) {
         guard controller.hasMagSafeLED else { return }
         let desired: ChargingController.LED =
-            (cfg.magsafeLED && inhibited && bat.isPluggedIn) ? .green : .auto
+            (cfg.magsafeLED && requested && bat.isPluggedIn) ? .green : .auto
+
+        if desired != pendingLED {
+            pendingLED = desired
+            pendingLEDSince = Date()
+        }
+        // Первое решение после запуска принимаем сразу: ждать пять секунд,
+        // чтобы отдать светодиод системе, незачем.
+        guard lastLED == nil
+                || Date().timeIntervalSince(pendingLEDSince) >= Daemon.ledDebounce else { return }
 
         if desired == .green {
             // Систему приходится переубеждать: она возвращает свой цвет,
             // поэтому сверяем фактическое значение на каждом тике.
             if controller.currentLED() != .green {
                 try? controller.setLED(.green)
-                if lastLED != .green { log("Индикатор MagSafe: зелёный") }
             }
+            if lastLED != .green { log("Индикатор MagSafe: зелёный") }
         } else if lastLED != .auto {
             // Обратно отдаём управление системе один раз, иначе будем
             // бесконечно спорить с ней о цвете.

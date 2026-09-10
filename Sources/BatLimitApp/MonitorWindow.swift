@@ -25,9 +25,13 @@ final class MonitorModel: ObservableObject {
         refresh()
         reloadHistory()
         reloadProcesses()
-        timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+        // Режим .common, а не .default: иначе панель замирает на всё время,
+        // пока крутят колесо или тянут за край окна.
+        let ticker = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
             self?.tick()
         }
+        RunLoop.main.add(ticker, forMode: .common)
+        timer = ticker
     }
 
     func stop() {

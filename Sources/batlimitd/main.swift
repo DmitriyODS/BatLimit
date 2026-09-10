@@ -45,6 +45,7 @@ final class Daemon {
     /// Сколько желаемый цвет должен продержаться, прежде чем его применять.
     private static let ledDebounce: TimeInterval = 5
     private var lastHistoryWrite = Date.distantPast
+    private var lastLogRotateCheck = Date.distantPast
     private var lastTrim = Date.distantPast
     private var lastStatusWrite = Date.distantPast
     private var lastWrittenStatus: String?
@@ -82,6 +83,19 @@ final class Daemon {
         applyLED(cfg: cfg, requested: state.requested, battery: bat)
         recordHistory(bat)
         writeStatus(cfg: cfg, bat: bat, allowed: allowed, state: state)
+        rotateLogIfNeeded()
+    }
+
+    /// Журнал пополняется только событиями, так что размер смотрим редко.
+    /// Строка о самой ротации ложится уже в обрезанный файл — иначе о ней
+    /// никто бы не узнал.
+    private func rotateLogIfNeeded() {
+        let now = Date()
+        guard now.timeIntervalSince(lastLogRotateCheck) >= 300 else { return }
+        lastLogRotateCheck = now
+        guard let was = LogFile.rotateIfNeeded() else { return }
+        log("Журнал перерос порог (\(was / 1024) КБ) и обрезан, "
+            + "прошлое поколение — \(LogFile.archivePath)")
     }
 
     /// Разовая зарядка — это состояние в конфиге, а не одноразовое событие.

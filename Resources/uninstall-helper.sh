@@ -22,6 +22,6 @@ rm -f "/Library/LaunchDaemons/$LABEL.plist"
 rm -f "/Library/PrivilegedHelperTools/$LABEL"
 rm -f /usr/local/bin/batlimit
 rm -rf "$SUPPORT_DIR"
-rm -f /var/log/batlimit.log
+rm -f /var/log/batlimit.log /var/log/batlimit.log.1
 
 echo "BatLimit удалён"

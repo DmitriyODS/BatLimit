@@ -8,10 +8,26 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$PROJECT_DIR"
 
-VERSION="1.0"
-BUILD_NUMBER="$(date +%Y%m%d%H%M)"
+# Версия живёт в git, а не здесь: последний тег вида v1.2.3 даёт 1.2.3,
+# номер сборки — число коммитов (монотонное, в отличие от даты). Без git
+# или без тегов собирается 0.0 — чтобы случайная сборка не выдавала себя
+# за выпуск.
+GIT_DESCRIBE="$(git describe --tags --always --dirty 2>/dev/null || true)"
+VERSION="$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || true)"
+VERSION="${VERSION:-0.0}"
+BUILD_NUMBER="$(git rev-list --count HEAD 2>/dev/null || date +%Y%m%d%H%M)"
 OUT_DIR="$PROJECT_DIR/build"
 APP="$OUT_DIR/BatLimit.app"
+
+if [[ -n "$GIT_DESCRIBE" ]]; then
+    echo "==> Версия $VERSION, сборка $BUILD_NUMBER ($GIT_DESCRIBE)"
+    if [[ "$GIT_DESCRIBE" == *-dirty ]]; then
+        echo "    ВНИМАНИЕ: в рабочей копии есть незакоммиченные правки —"
+        echo "    собранное не соответствует ни одному коммиту"
+    fi
+else
+    echo "==> Версия $VERSION, сборка $BUILD_NUMBER (вне git-репозитория)"
+fi
 
 echo "==> Сборка (release, arm64)"
 swift build -c release --arch arm64
@@ -49,6 +65,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>LSMinimumSystemVersion</key>       <string>13.0</string>
     <key>LSApplicationCategoryType</key>    <string>public.app-category.utilities</string>
     <key>NSHumanReadableCopyright</key>     <string>BatLimit $VERSION</string>
+    <key>BLGitDescribe</key>                <string>${GIT_DESCRIBE:-неизвестно}</string>
 $ICON_ENTRY
     <!-- Живёт только в строке меню: без окна и без значка в Dock -->
     <key>LSUIElement</key>                  <true/>

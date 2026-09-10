@@ -8,7 +8,8 @@
 
 ## Установка
 
-Открой `BatLimit.dmg`. В окне два пути:
+Скачай образ со страницы [Releases](https://github.com/DmitriyODS/BatLimit/releases/latest)
+и открой его. В окне два пути:
 
 **Через установщик (проще).** Нажми на «Установить BatLimit.command» правой
 кнопкой → «Открыть». Скрипт проверит, подходит ли этот Mac, скопирует программу
@@ -177,6 +178,17 @@ swift Tools/make-dmg-background.swift  пересоздать фон окна DM
 
 Требуется Xcode или Command Line Tools.
 
+Версия берётся из git-тега, а не из константы в скрипте: `v1.2.3` даёт
+`1.2.3` в `CFBundleShortVersionString`, число коммитов — в `CFBundleVersion`,
+а полный `git describe` (вместе с меткой `-dirty`) кладётся в `BLGitDescribe`.
+Без тега сборка получает версию `0.0` — чтобы не выдавала себя за выпуск.
+Значит, выпуск начинается с тега:
+
+```
+git tag -a v1.2.3 -m "BatLimit 1.2.3"
+./build.sh
+```
+
 Журнал службы — `/var/log/batlimit.log`. Как только он перерастает мегабайт,
 прошлое поколение уезжает в `/var/log/batlimit.log.1`, а текущий файл
 обрезается **на месте**. Именно на месте: файл держит открытым launchd
@@ -221,6 +233,9 @@ covers every Apple Silicon Mac. Only a root LaunchDaemon touches the SMC; the
 menu bar app and the `batlimit` CLI are unprivileged and merely edit
 `/Library/Application Support/BatLimit/config.json`.
 
-Build with `./build.sh` (produces `build/BatLimit.app` and `build/BatLimit.dmg`)
-or `./build.sh install` to install straight into `/Applications`. The UI and
+Download the disk image from
+[Releases](https://github.com/DmitriyODS/BatLimit/releases/latest), or build it
+yourself with `./build.sh` (produces `build/BatLimit.app` and
+`build/BatLimit.dmg`) — `./build.sh install` installs straight into
+`/Applications`. The version comes from the latest `v*` git tag. The UI and
 docs are in Russian.

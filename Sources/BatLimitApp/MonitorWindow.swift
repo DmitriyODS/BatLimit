@@ -13,18 +13,36 @@ final class MonitorModel: ObservableObject {
     @Published var history: [HistoryPoint] = []
     @Published var processes: [ProcessEnergy] = []
     @Published var isLoadingProcesses = false
+    @Published var watts: Double?
+    /// Мощность по pid — обновляется каждую секунду, отдельно от самого
+    /// списка процессов: он пересобирается куда реже.
+    @Published var processWatts: [Int: Double] = [:]
 
     @Published var hours: Double = 24 {
         didSet { reloadHistory() }
     }
 
     private var timer: Timer?
+    private var powerTimer: Timer?
     private var processTick = 0
+    /// Счётчик мощности живёт, только пока открыта панель: держать открытым
+    /// соединение с SMC ради закрытого окна незачем.
+    private var powerMeter: PowerMeter?
+    private var processPower: ProcessPower?
+    /// Обход всех процессов занимает несколько миллисекунд — немного, но
+    /// каждую секунду дёргать этим главный поток незачем. Очередь
+    /// последовательная: замеры считают разницу с предыдущим и не должны
+    /// накладываться друг на друга.
+    private let processPowerQueue = DispatchQueue(label: "batlimit.process-power",
+                                                  qos: .utility)
 
     func start() {
         refresh()
         reloadHistory()
         reloadProcesses()
+        powerMeter = PowerMeter()
+        processPower = ProcessPower()
+        refreshPower()
         // Режим .common, а не .default: иначе панель замирает на всё время,
         // пока крутят колесо или тянут за край окна.
         let ticker = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
@@ -32,11 +50,23 @@ final class MonitorModel: ObservableObject {
         }
         RunLoop.main.add(ticker, forMode: .common)
         timer = ticker
+
+        // Мощность меняется быстро, и её значение SMC пересчитывает раз в
+        // секунду — опрашиваем отдельным таймером, а не вместе с остальным.
+        let powerTicker = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            self?.refreshPower()
+        }
+        RunLoop.main.add(powerTicker, forMode: .common)
+        powerTimer = powerTicker
     }
 
     func stop() {
         timer?.invalidate()
         timer = nil
+        powerTimer?.invalidate()
+        powerTimer = nil
+        powerMeter = nil
+        processPower = nil
         isLoadingProcesses = false
     }
 
@@ -57,6 +87,16 @@ final class MonitorModel: ObservableObject {
     private func refresh() {
         battery = Battery.read()
         status = Status.load()
+    }
+
+    private func refreshPower() {
+        watts = powerMeter?.read()
+        guard let sampler = processPower else { return }
+        processPowerQueue.async { [weak self] in
+            let sample = sampler.sample()
+            guard !sample.isEmpty else { return }
+            DispatchQueue.main.async { self?.processWatts = sample }
+        }
     }
 
     private func reloadHistory() {
@@ -108,7 +148,7 @@ struct MonitorView: View {
             }
             .padding(20)
         }
-        .frame(minWidth: 640, minHeight: 560)
+        .frame(minWidth: 700, minHeight: 560)
     }
 
     // MARK: - Шапка
@@ -141,6 +181,8 @@ struct MonitorView: View {
 
     private var tiles: some View {
         HStack(spacing: 12) {
+            tile("Мощность", model.watts.map { String(format: "%.1f Вт", $0) } ?? "—")
+                .help("Сколько ватт ноутбук потребляет прямо сейчас. Обновляется раз в секунду.")
             tile("Циклов", model.battery?.cycleCount.map(String.init) ?? "—")
             tile("Здоровье", model.battery?.health.map { String(format: "%.0f %%", $0) } ?? "—")
             tile("Ёмкость", model.battery?.maxCapacity.map { "\($0) мА·ч" } ?? "—")
@@ -268,8 +310,14 @@ struct MonitorView: View {
 
     private var processSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("Больше всего расходуют батарею").font(.headline)
+                if let leader = model.processes.first {
+                    Text("сейчас лидирует \(leader.name)")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
                 if model.isLoadingProcesses {
                     ProgressView().controlSize(.small)
                 }
@@ -281,37 +329,56 @@ struct MonitorView: View {
                     .font(.callout).foregroundStyle(.secondary)
             } else {
                 VStack(spacing: 6) {
-                    ForEach(model.processes) { process in
-                        processRow(process)
+                    ForEach(Array(model.processes.enumerated()), id: \.element.id) { index, process in
+                        processRow(process, isLeader: index == 0)
                     }
                 }
             }
 
-            Text("«Энергетическое воздействие» — та же метрика, что в Мониторинге системы: "
-                 + "относительная нагрузка процесса на батарею.")
+            Text("Ватты — измеренная энергия процессорных ядер: экран, видеоядро и "
+                 + "радиомодули ни за кем не числятся, поэтому сумма по списку "
+                 + "меньше общей мощности. У системных процессов счётчик закрыт, "
+                 + "им остаётся прочерк. Серым — «энергетическое воздействие», та же "
+                 + "относительная метрика, что в Мониторинге системы; по ней и "
+                 + "отсортирован список.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
     }
 
-    private func processRow(_ process: ProcessEnergy) -> some View {
+    private func processRow(_ process: ProcessEnergy, isLeader: Bool) -> some View {
         let maxImpact = model.processes.map(\.impact).max() ?? 1
         return HStack(spacing: 10) {
             Text(process.name)
                 .lineLimit(1)
+                .fontWeight(isLeader ? .semibold : .regular)
                 .frame(width: 180, alignment: .leading)
             GeometryReader { geometry in
                 let ratio = maxImpact > 0 ? process.impact / maxImpact : 0
                 RoundedRectangle(cornerRadius: 4)
-                    .fill(Color.accentColor.opacity(0.75))
+                    .fill(Color.accentColor.opacity(isLeader ? 1 : 0.55))
                     .frame(width: max(2, geometry.size.width * ratio))
             }
             .frame(height: 14)
+            Text(MonitorView.wattsText(model.processWatts[process.id]))
+                .monospacedDigit()
+                .font(.callout)
+                .fontWeight(isLeader ? .semibold : .regular)
+                .frame(width: 74, alignment: .trailing)
             Text(String(format: "%.1f", process.impact))
                 .monospacedDigit()
                 .font(.callout)
-                .frame(width: 52, alignment: .trailing)
+                .foregroundStyle(.secondary)
+                .frame(width: 44, alignment: .trailing)
         }
+    }
+
+    /// Доли ватта читаются тяжело, поэтому мелочь показываем в милливаттах.
+    static func wattsText(_ watts: Double?) -> String {
+        guard let watts else { return "—" }
+        if watts >= 1 { return String(format: "%.2f Вт", watts) }
+        if watts >= 0.0005 { return String(format: "%.0f мВт", watts * 1000) }
+        return "0 мВт"
     }
 }
 
@@ -328,7 +395,7 @@ final class MonitorWindowController: NSObject, NSWindowDelegate {
         }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 720, height: 620),
+            contentRect: NSRect(x: 0, y: 0, width: 780, height: 620),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered, defer: false)
         window.title = "Батарея — BatLimit"

@@ -62,3 +62,84 @@ public enum EnergyUsage {
         return ProcessEnergy(id: pid, name: name, impact: impact)
     }
 }
+
+/// Сколько ватт каждый процесс тратит на вычисления.
+///
+/// Ядро ведёт для каждой задачи счётчик израсходованной энергии
+/// (`ri_energy_nj` из `proc_pid_rusage`); берём разницу двух замеров и делим на
+/// прошедшее время. Это настоящее измерение, а не пересчёт «энергетического
+/// воздействия»: обе величины приходят из разных источников и между собой
+/// не связаны.
+///
+/// Обход всех процессов занимает несколько миллисекунд (дороже всего обходятся
+/// отказы на чужих) — на три порядка дешевле, чем запуск `top`, так что
+/// опрашивать можно хоть каждую секунду.
+///
+/// Две оговорки, обе отражены в подписи под списком:
+///
+/// * считается только энергия процессорных ядер — экран, радиомодули и
+///   накопитель ни за кем не числятся, поэтому сумма по процессам заметно
+///   меньше общего потребления ноутбука;
+/// * чужие процессы (root и другие пользователи — `WindowServer`,
+///   `kernel_task`) читать не дают, для них мощность неизвестна.
+public final class ProcessPower {
+    private var previous: [Int32: UInt64] = [:]
+    private var previousTime: Date
+
+    public init() {
+        previous = ProcessPower.snapshot()
+        previousTime = Date()
+    }
+
+    /// Мощность по pid за время, прошедшее с прошлого вызова.
+    /// Процессы, чей счётчик прочитать не удалось, в словарь не попадают.
+    public func sample() -> [Int: Double] {
+        let now = Date()
+        let seconds = now.timeIntervalSince(previousTime)
+        let current = ProcessPower.snapshot()
+        // Слишком короткий промежуток превращает шум округления в киловатты.
+        guard seconds >= 0.2 else { return [:] }
+
+        var watts: [Int: Double] = [:]
+        for (pid, energy) in current {
+            // Счётчик только растёт; меньшее значение означает, что номер
+            // достался новому процессу, — его первый замер пропускаем.
+            guard let was = previous[pid], energy >= was else { continue }
+            watts[Int(pid)] = Double(energy - was) / 1e9 / seconds
+        }
+        previous = current
+        previousTime = now
+        return watts
+    }
+
+    /// Накопленная энергия в наноджоулях по всем доступным процессам.
+    private static func snapshot() -> [Int32: UInt64] {
+        var pids = [Int32](repeating: 0, count: 8192)
+        // Размер буфера задаётся в байтах, а возвращается уже число процессов,
+        // а не байт: делить результат на размер Int32 не нужно.
+        let count = proc_listallpids(&pids, Int32(pids.count * MemoryLayout<Int32>.size))
+        guard count > 0 else { return [:] }
+
+        var result: [Int32: UInt64] = [:]
+        for pid in pids[0 ..< min(Int(count), pids.count)] where pid > 0 {
+            if let energy = energy(of: pid) { result[pid] = energy }
+        }
+        return result
+    }
+
+    /// `ri_energy_nj` появился только в шестой версии структуры: на macOS,
+    /// где её нет, вызов вернёт ошибку и мощность процессов останется
+    /// неизвестной — панель покажет прочерки.
+    private static func energy(of pid: Int32) -> UInt64? {
+        var info = rusage_info_v6()
+        let code = withUnsafeMutablePointer(to: &info) { pointer -> Int32 in
+            // proc_pid_rusage объявлен как `rusage_info_t *` (то есть `void **`),
+            // но ждёт указатель на саму структуру — иначе пишет её содержимое
+            // поверх восьми байт указателя.
+            let slot = UnsafeMutableRawPointer(pointer)
+                .assumingMemoryBound(to: rusage_info_t?.self)
+            return proc_pid_rusage(pid, RUSAGE_INFO_V6, slot)
+        }
+        return code == 0 ? info.ri_energy_nj : nil
+    }
+}

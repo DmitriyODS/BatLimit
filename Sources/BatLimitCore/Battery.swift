@@ -26,16 +26,22 @@ public struct BatteryInfo {
 }
 
 public enum Battery {
-    /// Читает AppleSmartBattery из IORegistry. Root не нужен.
-    public static func read() -> BatteryInfo? {
+    /// Сырой словарь свойств AppleSmartBattery. Root не нужен.
+    public static func properties() -> [String: Any]? {
         let service = IOServiceGetMatchingService(kIOMainPortDefault,
                                                   IOServiceMatching("AppleSmartBattery"))
         guard service != 0 else { return nil }
         defer { IOObjectRelease(service) }
 
         var unmanaged: Unmanaged<CFMutableDictionary>?
-        guard IORegistryEntryCreateCFProperties(service, &unmanaged, kCFAllocatorDefault, 0) == KERN_SUCCESS,
-              let props = unmanaged?.takeRetainedValue() as? [String: Any] else { return nil }
+        guard IORegistryEntryCreateCFProperties(service, &unmanaged, kCFAllocatorDefault, 0) == KERN_SUCCESS
+        else { return nil }
+        return unmanaged?.takeRetainedValue() as? [String: Any]
+    }
+
+    /// Читает AppleSmartBattery из IORegistry. Root не нужен.
+    public static func read() -> BatteryInfo? {
+        guard let props = properties() else { return nil }
 
         let percentage = props["CurrentCapacity"] as? Int ?? 0
         let isCharging = props["IsCharging"] as? Bool ?? false

@@ -59,8 +59,17 @@ public enum Battery {
             return v
         }
 
+        // В macOS 27 ёмкости и температура пропали с верхнего уровня
+        // AppleSmartBattery: ёмкости переехали в словарь `BatteryData`,
+        // температуры в IORegistry нет вовсе. Сначала смотрим по-старому.
+        let data = props["BatteryData"] as? [String: Any] ?? [:]
+        func capacity(_ key: String) -> Int? {
+            (props[key] as? Int) ?? (data[key] as? Int)
+        }
+
         // Температура хранится в сотых долях градуса.
         let temperature = (props["Temperature"] as? Int).map { Double($0) / 100 }
+            ?? smcTemperature()
 
         return BatteryInfo(percentage: percentage,
                            isCharging: isCharging,
@@ -73,9 +82,25 @@ public enum Battery {
                            // сглаженную оценку. AppleRawMaxCapacity это сырое
                            // показание газоанализатора: оно скачет на проценты
                            // от температуры и заряда, и пугает пользователя.
-                           maxCapacity: (props["NominalChargeCapacity"] as? Int)
-                               ?? (props["AppleRawMaxCapacity"] as? Int),
-                           designCapacity: props["DesignCapacity"] as? Int,
+                           maxCapacity: capacity("NominalChargeCapacity")
+                               ?? (props["AppleRawMaxCapacity"] as? Int)
+                               ?? capacity("FullChargeCapacity"),
+                           designCapacity: capacity("DesignCapacity"),
                            temperature: temperature)
+    }
+
+    /// Соединение с SMC держим открытым: служба читает батарею каждую секунду.
+    private static let smc = try? SMC()
+
+    /// Температура батареи из SMC-ключа `TB0T` (°C, `flt `). Root не нужен.
+    private static func smcTemperature() -> Double? {
+        guard let bytes = try? smc?.read("TB0T"), bytes.count == 4 else { return nil }
+        // Числа типа `flt ` лежат little-endian, в отличие от остальных
+        // значений SMC.
+        let bits = UInt32(bytes[0]) | UInt32(bytes[1]) << 8
+            | UInt32(bytes[2]) << 16 | UInt32(bytes[3]) << 24
+        let celsius = Double(Float(bitPattern: bits))
+        guard celsius.isFinite, celsius > -40, celsius < 120 else { return nil }
+        return celsius
     }
 }

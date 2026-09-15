@@ -6,6 +6,8 @@ public enum Paths {
     public static let config  = dir + "/config.json"
     public static let status  = dir + "/status.json"
     public static let version = dir + "/installed-version"
+    /// Лимит зарядки macOS, который стоял до BatLimit (см. `SystemChargeLimitBackup`).
+    public static let systemLimitBackup = dir + "/macos-charge-limit"
     /// Демон лежит вне бандла: LaunchDaemon под root не должен запускать
     /// бинарник из каталога, доступного на запись пользователю.
     public static let daemon  = "/Library/PrivilegedHelperTools/" + label

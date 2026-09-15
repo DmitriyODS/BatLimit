@@ -51,11 +51,45 @@ final class Daemon {
     private var lastWrittenStatus: String?
     private var lastError: String?
 
+    // MARK: Лимит macOS (api == .macOSLimit)
+
+    /// Потолок, на котором держим заряд, пока зарядка запрещена. Только
+    /// опускается: подними его вслед за процентом — и контроллер, дозаряжая
+    /// батарею на лишний процент при остановке, тянул бы его вверх бесконечно.
+    private var holdCeiling: Int?
+    /// Что записали в последний раз и когда.
+    private var appliedLimit: Int?
+    private var limitWrittenAt = Date.distantPast
+    /// С какого момента факт расходится с решением и толкали ли уже контроллер
+    /// за это расхождение — не чаще раза, иначе при упрямом контроллере
+    /// адаптер отключался бы каждые 20 секунд.
+    private var mismatchSince: Date?
+    private var nudgedThisMismatch = false
+    /// Решение, при котором писали лимит в последний раз, — для журнала.
+    private var lastLimitAllowed: Bool?
+    private var lastLimitCheck = Date.distantPast
+    /// Сколько расхождение должно продержаться, прежде чем толкать контроллер.
+    /// Сам он подхватывает новый лимит за ~10 с, а `IsCharging` на подключении
+    /// адаптера на мгновение взводится и при удержанном заряде.
+    private static let nudgeDelay: TimeInterval = 20
+    /// Как часто сверяться с агентом: лимит могут поменять в Настройках.
+    private static let limitCheckInterval: TimeInterval = 5
+
     init() throws {
         controller = try ChargingController()
-        log("Запуск. SMC API: \(controller.api.rawValue)")
-        if controller.api == .unknown {
-            log("ВНИМАНИЕ: подходящих SMC-ключей нет, управлять зарядкой не смогу")
+        log("Запуск. Управление зарядкой: \(controller.api.rawValue)")
+        switch controller.api {
+        case .unknown:
+            log("ВНИМАНИЕ: ни SMC-ключей, ни лимита macOS нет, управлять зарядкой не смогу")
+        case .macOSLimit:
+            let agent = controller.systemLimit?.agentLimit().map { "\($0)%" } ?? "не отвечает"
+            log("Лимит macOS сейчас: \(agent)"
+                + (SystemChargeLimitBackup.load().map { ", до BatLimit стоял \($0)%" } ?? ""))
+            if controller.resetAdapterIfDisabled() {
+                log("Адаптер был отключён ключом CHIE — включён обратно")
+            }
+        case .tahoe, .legacy:
+            break
         }
     }
 
@@ -79,7 +113,9 @@ final class Daemon {
         lastMode = cfg.mode
 
         let allowed = decide(cfg: cfg, battery: bat)
-        let state = apply(allowed: allowed, battery: bat)
+        let state = controller.api == .macOSLimit
+            ? applySystemLimit(allowed: allowed, cfg: cfg, battery: bat)
+            : apply(allowed: allowed, battery: bat)
         applyLED(cfg: cfg, requested: state.requested, battery: bat)
         recordHistory(bat)
         writeStatus(cfg: cfg, bat: bat, allowed: allowed, state: state)
@@ -215,6 +251,144 @@ final class Daemon {
         return ChargeState(requested: shouldInhibit, effective: effective, settling: settling)
     }
 
+    /// То же, что `apply`, но рычаг — лимит зарядки macOS, а не запрет в SMC.
+    ///
+    /// Лимит — это потолок, а не выключатель, поэтому решение переводится так:
+    /// можно заряжать — потолок на верхнем пороге; нельзя — потолок на текущем
+    /// заряде (`holdCeiling`). Ниже текущего не ставим: у политики powerd
+    /// `drain: true`, и на новой сессии зарядки ноутбук стал бы разряжать
+    /// батарею до потолка прямо от сети.
+    ///
+    /// В режиме «выключено» отпускаем управление: возвращаем лимит, который
+    /// стоял до нас, и дальше в Настройки не вмешиваемся.
+    private func applySystemLimit(allowed: Bool, cfg: Config, battery bat: BatteryInfo) -> ChargeState {
+        guard let limit = controller.systemLimit else {
+            return ChargeState(requested: false, effective: false, settling: false)
+        }
+        if cfg.mode == .off && !oneShot {
+            releaseSystemLimit(limit)
+            return ChargeState(requested: false, effective: false, settling: false)
+        }
+
+        let shouldInhibit = !allowed
+        let target: Int
+        if allowed {
+            holdCeiling = nil
+            target = cfg.high
+        } else {
+            let ceiling = min(holdCeiling ?? bat.percentage, bat.percentage)
+            holdCeiling = ceiling
+            target = max(ceiling, SystemChargeLimit.minimum)
+        }
+
+        do {
+            try enforceSystemLimit(limit, target: target, allowed: allowed)
+            lastError = nil
+        } catch {
+            let message = "\(error)"
+            if lastError != message { log("Ошибка лимита macOS: \(message)") }
+            lastError = message
+        }
+
+        // Факт — по `NotChargingReason`: бит 24 означает, что заряд держит
+        // лимит macOS, то есть теперь мы. На батарее сверять нечего.
+        let mismatch: Bool
+        if !bat.isPluggedIn {
+            mismatch = false
+        } else if shouldInhibit {
+            mismatch = bat.isCharging
+        } else {
+            mismatch = bat.systemLimitActive && bat.percentage < target
+        }
+
+        let now = Date()
+        if mismatch {
+            let since = mismatchSince ?? now
+            mismatchSince = since
+            if !nudgedThisMismatch && now.timeIntervalSince(since) >= Daemon.nudgeDelay {
+                nudgedThisMismatch = true
+                do {
+                    try controller.nudgeCharger()
+                    log("Контроллер не подхватил лимит \(target)% за \(Int(now.timeIntervalSince(since))) с — "
+                        + "переподключил адаптер ключом CHIE")
+                } catch {
+                    log("Не удалось переподключить адаптер: \(error)")
+                }
+            }
+        } else {
+            mismatchSince = nil
+            nudgedThisMismatch = false
+        }
+        let sinceWrite = now.timeIntervalSince(limitWrittenAt)
+
+        return ChargeState(requested: shouldInhibit,
+                           effective: shouldInhibit && !mismatch,
+                           settling: mismatch && sinceWrite < Daemon.settleWindow)
+    }
+
+    /// Пишет лимит, если он отличается от нужного, и раз в несколько секунд
+    /// сверяется с агентом: лимит могли поменять в Настройках или снять
+    /// «Зарядить до конца» в меню батареи.
+    private func enforceSystemLimit(_ limit: SystemChargeLimit, target: Int, allowed: Bool) throws {
+        let now = Date()
+        var drift: String?
+        if appliedLimit == target {
+            guard now.timeIntervalSince(lastLimitCheck) >= Daemon.limitCheckInterval else { return }
+            lastLimitCheck = now
+            if limit.isTemporarilyDisabled {
+                drift = "лимит временно сняли из меню батареи"
+            } else if let agent = limit.agentLimit(), agent != target {
+                drift = "лимит поменяли в обход BatLimit (\(agent)%)"
+                // Ползунок в Настройках двигал пользователь — это его выбор,
+                // его и вернём, когда отпустим управление.
+                if (80...100).contains(agent) { SystemChargeLimitBackup.save(agent) }
+            }
+            guard drift != nil else { return }
+        }
+
+        if SystemChargeLimitBackup.load() == nil {
+            let original = limit.agentLimit() ?? 100
+            SystemChargeLimitBackup.save(original)
+            log("Беру под контроль лимит macOS, до BatLimit стоял \(original)%")
+        }
+        try limit.setLimit(target)
+
+        if let drift {
+            log("Лимит macOS: \(target)% — \(drift)")
+        } else if lastLimitAllowed != allowed {
+            // Потолок удержания ползёт вниз вместе с зарядом на батарее —
+            // это не событие, в журнал пишем только смену решения.
+            log(allowed ? "Лимит macOS: \(target)% — зарядка разрешена"
+                        : "Лимит macOS: \(target)% — зарядка остановлена на текущем заряде")
+        }
+        lastLimitAllowed = allowed
+        appliedLimit = target
+        limitWrittenAt = now
+        lastLimitCheck = now
+        // Новая запись — новый шанс контроллеру справиться самому.
+        mismatchSince = nil
+        nudgedThisMismatch = false
+    }
+
+    /// Возвращает лимит, который стоял до BatLimit. Без резервной копии — нечего
+    /// возвращать: управление уже отпущено или ни разу не бралось.
+    private func releaseSystemLimit(_ limit: SystemChargeLimit) {
+        holdCeiling = nil
+        appliedLimit = nil
+        lastLimitAllowed = nil
+        guard let original = SystemChargeLimitBackup.load() else { return }
+        do {
+            try limit.setLimit(original)
+            SystemChargeLimitBackup.remove()
+            log("Лимит macOS возвращён: \(original)%")
+            lastError = nil
+        } catch {
+            let message = "\(error)"
+            if lastError != message { log("Не удалось вернуть лимит macOS: \(message)") }
+            lastError = message
+        }
+    }
+
     /// Зелёный светодиод MagSafe = «питание есть, батарею намеренно не заряжаем».
     ///
     /// Смотрим на наше решение (`requested`), а не на факт из
@@ -278,7 +452,7 @@ final class Daemon {
                             isPluggedIn: bat.isPluggedIn,
                             inhibited: state.effective,
                             settling: state.settling,
-                            systemLimitActive: bat.systemLimitActive,
+                            systemLimitActive: systemLimitIsForeign(bat),
                             mode: cfg.mode,
                             low: cfg.low,
                             high: cfg.high,
@@ -312,7 +486,7 @@ final class Daemon {
     private func describePhase(cfg: Config, bat: BatteryInfo, allowed: Bool,
                                state: ChargeState) -> String {
         let source = bat.isPluggedIn ? "от сети" : "от батареи"
-        if controller.api == .unknown { return "SMC-ключи не найдены" }
+        if controller.api == .unknown { return "нечем управлять зарядкой" }
 
         // Контроллер применяет команду не сразу — не делаем вид, что уже готово.
         if state.settling {
@@ -321,7 +495,7 @@ final class Daemon {
         }
         // Системный лимит macOS — второй, независимый замок: он держит зарядку
         // своим битом 24 и нашим ключом не открывается.
-        if allowed && bat.isPluggedIn && bat.systemLimitActive && bat.percentage < cfg.high {
+        if allowed && bat.isPluggedIn && systemLimitIsForeign(bat) && bat.percentage < cfg.high {
             return "от сети, зарядку держит системный лимит macOS"
         }
         // Окно ожидания вышло, а запрет так и не подействовал — это аномалия,
@@ -345,6 +519,12 @@ final class Daemon {
         }
     }
 
+    /// Бит 24 — зарядку держит лимит macOS. Чужой это замок или наш, зависит
+    /// от рычага: при `.macOSLimit` лимитом управляем мы сами.
+    private func systemLimitIsForeign(_ bat: BatteryInfo) -> Bool {
+        controller.api != .macOSLimit && bat.systemLimitActive
+    }
+
     /// Конфиг принадлежит root:admin — его правят приложение и CLI без sudo.
     private func restoreConfigOwnership() {
         try? FileManager.default.setAttributes([
@@ -360,8 +540,14 @@ final class Daemon {
     /// ноутбук с навсегда запрещённой зарядкой.
     func shutdown() {
         log("Останов: снимаю блокировку зарядки")
-        if controller.api != .unknown {
+        switch controller.api {
+        case .tahoe, .legacy:
             try? controller.setChargingAllowed(true)
+        case .macOSLimit:
+            _ = controller.resetAdapterIfDisabled()
+            if let limit = controller.systemLimit { releaseSystemLimit(limit) }
+        case .unknown:
+            break
         }
         if controller.hasMagSafeLED {
             try? controller.setLED(.auto)

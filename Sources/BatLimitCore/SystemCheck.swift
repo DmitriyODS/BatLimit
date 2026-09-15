@@ -56,7 +56,7 @@ public struct SystemCheck {
         // Проверяем последним: на Intel и на десктопе ключей не будет по любой
         // из причин выше, и дублировать одну и ту же новость незачем.
         if found.isEmpty && api == .unknown {
-            found.append("контроллер питания не отвечает ни на CHTE, ни на CH0B — "
+            found.append("нет ни SMC-ключей CHTE/CH0B, ни лимита зарядки macOS — "
                 + "управлять зарядкой на этой машине нечем")
         }
         return found
@@ -71,7 +71,7 @@ public struct SystemCheck {
             "Процессор: \(chip)",
             "macOS:   \(osVersion)",
             "Батарея: \(hasBattery ? "есть" : "нет")",
-            "Ключи управления зарядкой: \(api.rawValue)",
+            "Управление зарядкой: \(api.rawValue)",
             "Индикатор MagSafe: \(hasMagSafeLED ? "есть" : "нет")",
         ]
         if isSupported {

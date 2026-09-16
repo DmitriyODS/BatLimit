@@ -148,3 +148,6 @@
 "monitor.watts.full" = "%.2f W";
 "monitor.watts.milli" = "%.0f mW";
 "monitor.watts.zero" = "0 mW";
+
+/* Energy mode in the icon tooltip */
+"icon.tooltip.energy" = "energy mode: %@";

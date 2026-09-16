@@ -425,10 +425,14 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate, Set
         // честным, даже когда служба молчит.
         let battery = Battery.read()
 
-        applyIndicator(battery: battery, status: status, live: live, starting: starting)
+        let plugged = battery?.isPluggedIn ?? status?.isPluggedIn ?? false
+        let energy = EnergyModes.current(plugged: plugged)
+
+        applyIndicator(battery: battery, status: status, energy: energy,
+                       live: live, starting: starting)
         updateServiceItem(installState)
         updateChargingMenu(cfg: cfg, status: status, live: live)
-        updateEnergyMenu(plugged: battery?.isPluggedIn ?? status?.isPluggedIn ?? false, live: live)
+        updateEnergyMenu(current: energy, live: live)
 
         guard let st = status, installed else {
             titleItem.title = installed
@@ -498,8 +502,7 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate, Set
     /// Пункте управления. Текущее значение читаем сами (прав для этого не
     /// нужно), а менять умеет только служба — пока она молчит, показываем
     /// правду, но переключать не даём: просьбу некому выполнить.
-    private func updateEnergyMenu(plugged: Bool, live: Bool) {
-        let current = EnergyModes.current(plugged: plugged)
+    private func updateEnergyMenu(current: EnergyMode?, live: Bool) {
         for item in energyModeItems {
             item.state = (item.tag == current?.pmsetValue) ? .on : .off
             item.isEnabled = live
@@ -510,7 +513,8 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate, Set
     /// Возможности машины за время работы не меняются — спрашиваем один раз.
     private lazy var supportsHighPower = EnergyModes.supportsHigh()
 
-    private func applyIndicator(battery: BatteryInfo?, status: Status?, live: Bool, starting: Bool) {
+    private func applyIndicator(battery: BatteryInfo?, status: Status?, energy: EnergyMode?,
+                                live: Bool, starting: Bool) {
         guard let button = statusItem.button else { return }
 
         let percentage = battery?.percentage ?? status?.percentage
@@ -539,12 +543,15 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate, Set
                 badge = .none
             }
             button.toolTip = L("icon.tooltip", st.percentage, st.localizedPhase)
+                + (energy.map { "\n" + L("icon.tooltip.energy", $0.localizedName) } ?? "")
         } else {
             badge = .none
             button.toolTip = nil
         }
 
-        button.image = BatteryGlyph.image(percentage: percentage ?? 0, badge: badge)
+        button.image = BatteryGlyph.image(percentage: percentage ?? 0, badge: badge,
+                                          tint: tint(percentage: percentage, plugged: plugged,
+                                                     energy: energy))
         if AppPreferences.showPercentage {
             // Цифры моноширинные: иначе значок дёргался бы на каждом проценте.
             button.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
@@ -553,6 +560,19 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate, Set
         } else {
             button.title = ""
             button.imagePosition = .imageOnly
+        }
+    }
+
+    /// Цвет батареи. Красный на исходе заряда и жёлтый в экономии — тот же
+    /// язык, что у системного индикатора; синий у высокой производительности
+    /// свой, в macOS для неё цвета нет. Заряд на исходе важнее режима:
+    /// о нём и предупреждаем.
+    private func tint(percentage: Int?, plugged: Bool, energy: EnergyMode?) -> BatteryGlyph.Tint {
+        if let percentage, percentage <= 20, !plugged { return .critical }
+        switch energy {
+        case .low:  return .low
+        case .high: return .high
+        default:    return .normal
         }
     }
 

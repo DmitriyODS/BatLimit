@@ -148,3 +148,6 @@
 "monitor.watts.full" = "%.2f Вт";
 "monitor.watts.milli" = "%.0f мВт";
 "monitor.watts.zero" = "0 мВт";
+
+/* Режим энергии в подсказке значка */
+"icon.tooltip.energy" = "режим энергии: %@";

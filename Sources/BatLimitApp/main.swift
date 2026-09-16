@@ -6,7 +6,7 @@ import BatLimitCore
 // config.json и читает status.json. Всё, что касается SMC, делает служба
 // batlimitd, которую приложение устанавливает при первом запуске.
 
-final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate, SettingsActions {
     private var statusItem: NSStatusItem!
     private var timer: Timer?
     private let menu = NSMenu()
@@ -18,20 +18,27 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private var titleItem: NSMenuItem!
     private var phaseItem: NSMenuItem!
-    private var cycleItem: NSMenuItem!
     private var warningItem: NSMenuItem!
-    private var installItem: NSMenuItem!
+    /// Единственный след службы в меню: пока она не установлена или устарела,
+    /// строка ведёт в настройки, где этим и занимаются.
+    private var serviceItem: NSMenuItem!
+
+    private var chargingItem: NSMenuItem!
     private var holdItem: NSMenuItem!
     private var chargeItem: NSMenuItem!
     private var autoItem: NSMenuItem!
     private var offItem: NSMenuItem!
     private var lowMenuItem: NSMenuItem!
     private var highMenuItem: NSMenuItem!
+
+    private var energyItem: NSMenuItem!
+    private var energyModeItems: [NSMenuItem] = []
+
     private var monitorItem: NSMenuItem!
-    private var ledItem: NSMenuItem!
-    private var loginItem: NSMenuItem!
+    private var settingsItem: NSMenuItem!
+
     private let monitorWindow = MonitorWindowController()
-    private var footerItem: NSMenuItem!
+    private let settingsWindow = SettingsWindowController()
 
     private var version: String {
         Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "dev"
@@ -43,9 +50,6 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var daemonFingerprint: String = {
         resource("batlimitd").flatMap { HelperInstaller.fingerprint(ofFileAt: $0) } ?? version
     }()
-    private var shortVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
-    }
 
     // MARK: - Жизненный цикл
 
@@ -59,7 +63,6 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         buildMenu()
         statusItem.menu = menu
         migrateLegacyLoginAgent()
-        updateLoginItem()
         refresh()
 
         // Таймер добавляем в общие режимы: в `.default` он замирает, пока
@@ -78,6 +81,11 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self, selector: #selector(systemDidWake),
             name: NSWorkspace.didWakeNotification, object: nil)
 
+        // Вид значка меняют в окне настроек — оно и сообщает, когда перерисовать.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(preferencesChanged),
+            name: .appPreferencesChanged, object: nil)
+
         // Диалог показываем после того, как иконка появилась в строке меню:
         // иначе пользователь получает запрос пароля непонятно от чего.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
@@ -90,9 +98,12 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refresh()
     }
 
+    @objc private func preferencesChanged() {
+        refresh()
+    }
+
     /// Открытое меню перерисовываем сразу, не дожидаясь очередного тика.
     func menuWillOpen(_ menu: NSMenu) {
-        updateLoginItem()
         refresh()
     }
 
@@ -110,7 +121,7 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // службу на Intel или на Mac без батареи бессмысленно.
         let check = SystemCheck.run()
         guard check.isSupported else {
-            showError("BatLimit не поддерживает этот Mac", check.summary)
+            showError(L("alert.unsupported.title"), check.summary)
             return
         }
 
@@ -120,15 +131,10 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         case .notInstalled:
             let alert = NSAlert()
-            alert.messageText = "Установить службу BatLimit?"
-            alert.informativeText = """
-                Чтобы управлять зарядкой, нужна фоновая служба с правами \
-                администратора — она единственная обращается к контроллеру питания.
-
-                Пароль спросят один раз. Удалить службу можно из этого же меню.
-                """
-            alert.addButton(withTitle: "Установить")
-            alert.addButton(withTitle: "Не сейчас")
+            alert.messageText = L("alert.install.title")
+            alert.informativeText = L("alert.install.body")
+            alert.addButton(withTitle: L("alert.install.ok"))
+            alert.addButton(withTitle: L("alert.install.cancel"))
             alert.alertStyle = .informational
             NSApp.activate(ignoringOtherApps: true)
             guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -136,27 +142,19 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         case .outdated:
             let alert = NSAlert()
-            alert.messageText = "Обновить службу BatLimit?"
-            alert.informativeText = """
-                Установлена служба от другой сборки приложения. \
-                Обновление займёт пару секунд и потребует пароль администратора.
-                """
-            alert.addButton(withTitle: "Обновить")
-            alert.addButton(withTitle: "Позже")
+            alert.messageText = L("alert.update.title")
+            alert.informativeText = L("alert.update.body")
+            alert.addButton(withTitle: L("alert.update.ok"))
+            alert.addButton(withTitle: L("alert.update.cancel"))
             NSApp.activate(ignoringOtherApps: true)
             guard alert.runModal() == .alertFirstButtonReturn else { return }
             performInstall()
         }
     }
 
-    @objc private func installHelper() {
-        performInstall()
-    }
-
     private func performInstall() {
         guard let script = resource("install-helper.sh"), let daemon = resource("batlimitd") else {
-            showError("Приложение собрано неполностью",
-                      "Внутри бандла нет install-helper.sh или batlimitd.")
+            showError(L("alert.incomplete.title"), L("alert.incomplete.install"))
             return
         }
         do {
@@ -167,26 +165,23 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } catch HelperInstaller.InstallError.cancelled {
             return
         } catch {
-            showError("Не удалось установить службу", "\(error)")
+            showError(L("alert.installFailed.title"), "\(error)")
         }
         refresh()
     }
 
-    @objc private func uninstallHelper() {
+    private func uninstallHelper() {
         let alert = NSAlert()
-        alert.messageText = "Удалить службу BatLimit?"
-        alert.informativeText = """
-            Зарядка вернётся в обычный режим. Само приложение останется — \
-            службу можно поставить снова из меню.
-            """
-        alert.addButton(withTitle: "Удалить")
-        alert.addButton(withTitle: "Отмена")
+        alert.messageText = L("alert.uninstall.title")
+        alert.informativeText = L("alert.uninstall.body")
+        alert.addButton(withTitle: L("alert.uninstall.ok"))
+        alert.addButton(withTitle: L("alert.uninstall.cancel"))
         alert.alertStyle = .warning
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
         guard let script = resource("uninstall-helper.sh") else {
-            showError("Приложение собрано неполностью", "Внутри бандла нет uninstall-helper.sh.")
+            showError(L("alert.incomplete.title"), L("alert.incomplete.uninstall"))
             return
         }
         do {
@@ -194,7 +189,7 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } catch HelperInstaller.InstallError.cancelled {
             return
         } catch {
-            showError("Не удалось удалить службу", "\(error)")
+            showError(L("alert.uninstallFailed.title"), "\(error)")
         }
         refresh()
     }
@@ -224,20 +219,9 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// Состояние автозапуска спрашиваем у launchd только когда оно нужно на
-    /// экране: `SMAppService.status` — синхронный XPC, и в цикле обновления
-    /// он оказывался на главном потоке дважды в секунду.
-    private func updateLoginItem() {
-        let state = loginState
-        loginItem.state = (state == .off) ? .off : .on
-        loginItem.title = (state == .needsApproval)
-            ? "Запускать при входе (нужно разрешение)"
-            : "Запускать при входе"
-    }
-
-    @objc private func toggleLoginItem() {
+    private func toggleLoginItem(_ enabled: Bool) {
         do {
-            if loginState == .off {
+            if enabled {
                 try SMAppService.mainApp.register()
                 if SMAppService.mainApp.status == .requiresApproval {
                     promptLoginApproval()
@@ -246,20 +230,17 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 try SMAppService.mainApp.unregister()
             }
         } catch {
-            showError("Не удалось изменить автозапуск", error.localizedDescription)
+            showError(L("alert.loginFailed.title"), error.localizedDescription)
         }
-        updateLoginItem()
-        refresh()
+        settingsWindow.refresh()
     }
 
     private func promptLoginApproval() {
         let alert = NSAlert()
-        alert.messageText = "Разреши запуск при входе"
-        alert.informativeText = """
-            macOS требует подтверждения: включи BatLimit в разделе             «Элементы входа» системных настроек.
-            """
-        alert.addButton(withTitle: "Открыть настройки")
-        alert.addButton(withTitle: "Позже")
+        alert.messageText = L("alert.loginApproval.title")
+        alert.informativeText = L("alert.loginApproval.body")
+        alert.addButton(withTitle: L("alert.loginApproval.ok"))
+        alert.addButton(withTitle: L("alert.loginApproval.cancel"))
         NSApp.activate(ignoringOtherApps: true)
         if alert.runModal() == .alertFirstButtonReturn {
             SMAppService.openSystemSettingsLoginItems()
@@ -329,65 +310,80 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         phaseItem = disabledItem("")
         menu.addItem(phaseItem)
 
-        cycleItem = disabledItem("")
-        cycleItem.isHidden = true
-        menu.addItem(cycleItem)
-
         warningItem = disabledItem("")
         warningItem.isHidden = true
         menu.addItem(warningItem)
 
-        installItem = NSMenuItem(title: "Установить службу…",
-                                 action: #selector(installHelper), keyEquivalent: "")
-        installItem.target = self
-        installItem.isHidden = true
-        menu.addItem(installItem)
+        serviceItem = actionItem(L("menu.service.install"), #selector(openSettings))
+        serviceItem.isHidden = true
+        menu.addItem(serviceItem)
 
-        monitorItem = actionItem("Панель мониторинга…", #selector(openMonitor))
+        menu.addItem(.separator())
+
+        chargingItem = NSMenuItem(title: L("menu.charging"), action: nil, keyEquivalent: "")
+        chargingItem.submenu = buildChargingMenu()
+        menu.addItem(chargingItem)
+
+        energyItem = NSMenuItem(title: L("menu.energy"), action: nil, keyEquivalent: "")
+        energyItem.submenu = buildEnergyMenu()
+        menu.addItem(energyItem)
+
+        menu.addItem(.separator())
+
+        monitorItem = actionItem(L("menu.monitor"), #selector(openMonitor))
         menu.addItem(monitorItem)
 
-        menu.addItem(.separator())
-
-        holdItem = actionItem("Не заряжать", #selector(setHold))
-        menu.addItem(holdItem)
-        chargeItem = actionItem("Зарядить до 80 %", #selector(chargeNow))
-        menu.addItem(chargeItem)
+        settingsItem = actionItem(L("menu.settings"), #selector(openSettings))
+        settingsItem.keyEquivalent = ","
+        menu.addItem(settingsItem)
 
         menu.addItem(.separator())
 
-        autoItem = actionItem("Авто: держать 30–80 %", #selector(toggleAuto))
-        menu.addItem(autoItem)
-
-        lowMenuItem = NSMenuItem(title: "Нижний порог", action: nil, keyEquivalent: "")
-        lowMenuItem.submenu = thresholdMenu([20, 25, 30, 35, 40, 50], #selector(setLow(_:)))
-        menu.addItem(lowMenuItem)
-
-        highMenuItem = NSMenuItem(title: "Верхний порог", action: nil, keyEquivalent: "")
-        highMenuItem.submenu = thresholdMenu([60, 70, 75, 80, 90, 100], #selector(setHigh(_:)))
-        menu.addItem(highMenuItem)
-
-        menu.addItem(.separator())
-
-        offItem = actionItem("Заряжать как обычно", #selector(setOff))
-        menu.addItem(offItem)
-
-        menu.addItem(.separator())
-
-        ledItem = actionItem("Зелёный индикатор MagSafe", #selector(toggleLED))
-        menu.addItem(ledItem)
-
-        loginItem = actionItem("Запускать при входе", #selector(toggleLoginItem))
-        menu.addItem(loginItem)
-
-        let removeItem = actionItem("Удалить службу…", #selector(uninstallHelper))
-        menu.addItem(removeItem)
-
-        footerItem = disabledItem("")
-        menu.addItem(footerItem)
-
-        let quit = actionItem("Выйти", #selector(quit))
+        let quit = actionItem(L("menu.quit"), #selector(quit))
         quit.keyEquivalent = "q"
         menu.addItem(quit)
+    }
+
+    private func buildChargingMenu() -> NSMenu {
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+
+        holdItem = actionItem(L("menu.charging.hold"), #selector(setHold))
+        submenu.addItem(holdItem)
+        chargeItem = actionItem(L("menu.charging.chargeTo", 80), #selector(chargeNow))
+        submenu.addItem(chargeItem)
+        autoItem = actionItem(L("menu.charging.auto", 30, 80), #selector(toggleAuto))
+        submenu.addItem(autoItem)
+        offItem = actionItem(L("menu.charging.off"), #selector(setOff))
+        submenu.addItem(offItem)
+
+        submenu.addItem(.separator())
+
+        lowMenuItem = NSMenuItem(title: L("menu.charging.low"), action: nil, keyEquivalent: "")
+        lowMenuItem.submenu = thresholdMenu([20, 25, 30, 35, 40, 50], #selector(setLow(_:)))
+        submenu.addItem(lowMenuItem)
+
+        highMenuItem = NSMenuItem(title: L("menu.charging.high"), action: nil, keyEquivalent: "")
+        highMenuItem.submenu = thresholdMenu([60, 70, 75, 80, 90, 100], #selector(setHigh(_:)))
+        submenu.addItem(highMenuItem)
+
+        return submenu
+    }
+
+    private func buildEnergyMenu() -> NSMenu {
+        let submenu = NSMenu()
+        submenu.autoenablesItems = false
+
+        energyModeItems = EnergyMode.allCases.map { mode in
+            let item = actionItem(mode.localizedName, #selector(setEnergyMode(_:)))
+            item.tag = mode.pmsetValue
+            submenu.addItem(item)
+            return item
+        }
+
+        submenu.addItem(.separator())
+        submenu.addItem(actionItem(L("menu.energy.settings"), #selector(openBatterySettings)))
+        return submenu
     }
 
     private func disabledItem(_ title: String) -> NSMenuItem {
@@ -406,7 +402,7 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let submenu = NSMenu()
         submenu.autoenablesItems = false
         for v in values {
-            let item = NSMenuItem(title: "\(v) %", action: action, keyEquivalent: "")
+            let item = NSMenuItem(title: L("menu.percent", v), action: action, keyEquivalent: "")
             item.target = self
             item.tag = v
             submenu.addItem(item)
@@ -425,54 +421,32 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Служба ответила — дальше её молчание уже не «ещё не поднялась».
         if live { graceUntil = .distantPast }
         let starting = Date() < graceUntil
+        // Заряд читаем сами: IORegistry прав не требует, и значок остаётся
+        // честным, даже когда служба молчит.
+        let battery = Battery.read()
 
-        // Пункты управления бессмысленны, пока служба не отвечает.
-        for item in [holdItem, chargeItem, autoItem, offItem, lowMenuItem, highMenuItem] {
-            item?.isEnabled = live
-        }
-        // Пункт остаётся доступным и когда служба устарела: иначе отложенное
-        // обновление уже нечем было бы запустить.
-        switch installState {
-        case .ready:
-            installItem.isHidden = true
-        case .notInstalled:
-            installItem.isHidden = false
-            installItem.title = "Установить службу…"
-        case .outdated:
-            installItem.isHidden = false
-            installItem.title = "Обновить службу…"
-        }
-        ledItem.state = cfg.magsafeLED ? .on : .off
-        ledItem.isEnabled = live
+        applyIndicator(battery: battery, status: status, live: live, starting: starting)
+        updateServiceItem(installState)
+        updateChargingMenu(cfg: cfg, status: status, live: live)
+        updateEnergyMenu(plugged: battery?.isPluggedIn ?? status?.isPluggedIn ?? false, live: live)
 
         guard let st = status, installed else {
-            applyIndicator(nil, live: false, starting: starting)
             titleItem.title = installed
-                ? (starting ? "Служба запускается…" : "Служба не отвечает")
-                : "Служба не установлена"
-            phaseItem.title = installed ? "" : "Управление зарядкой недоступно"
-            cycleItem.isHidden = true
+                ? (starting ? L("menu.service.starting") : L("menu.service.silent"))
+                : L("menu.service.missing")
+            phaseItem.title = installed ? "" : L("menu.service.unavailable")
             warningItem.isHidden = true
-            footerItem.title = "BatLimit \(shortVersion)"
             return
         }
 
-        applyIndicator(st, live: live, starting: starting)
-
-        titleItem.title = "\(st.percentage) % · \(st.isPluggedIn ? "от сети" : "от батареи")"
+        titleItem.title = L("menu.title", st.percentage,
+                            st.isPluggedIn ? L("source.ac") : L("source.battery"))
         if !live {
-            phaseItem.title = starting ? "служба запускается…" : "служба не отвечает"
+            phaseItem.title = starting ? L("menu.service.starting") : L("menu.service.silent")
         } else if let err = st.error {
-            phaseItem.title = "ошибка: \(err)"
+            phaseItem.title = L("menu.error", err)
         } else {
-            phaseItem.title = st.phase
-        }
-
-        if let cycles = st.cycleCount {
-            cycleItem.title = "Циклов зарядки: \(cycles)"
-            cycleItem.isHidden = false
-        } else {
-            cycleItem.isHidden = true
+            phaseItem.title = st.localizedPhase
         }
 
         // Системный лимит macOS — независимый от нас замок: он держит зарядку
@@ -480,65 +454,106 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let conflict = st.systemLimitActive && st.percentage < st.high
         warningItem.isHidden = !conflict
         if conflict {
-            warningItem.title = "⚠︎ Зарядку держит системный лимит macOS"
+            warningItem.title = L("menu.warning.systemLimit")
         }
+    }
 
-        holdItem.state = (st.mode == .hold) ? .on : .off
-        autoItem.state = (st.mode == .auto) ? .on : .off
-        offItem.state  = (st.mode == .off)  ? .on : .off
-        autoItem.title = "Авто: держать \(cfg.low)–\(cfg.high) %"
-        chargeItem.title = st.chargeNow ? "Заряжаю до \(cfg.high) %…" : "Зарядить до \(cfg.high) %"
-        chargeItem.isEnabled = live && !st.chargeNow && st.percentage < cfg.high
+    private func updateServiceItem(_ state: HelperInstaller.InstallState) {
+        switch state {
+        case .ready:
+            serviceItem.isHidden = true
+        case .notInstalled:
+            serviceItem.isHidden = false
+            serviceItem.title = L("menu.service.install")
+        case .outdated:
+            serviceItem.isHidden = false
+            serviceItem.title = L("menu.service.update")
+        }
+    }
+
+    private func updateChargingMenu(cfg: Config, status: Status?, live: Bool) {
+        // Пункты управления бессмысленны, пока служба не отвечает.
+        for item in [holdItem, chargeItem, autoItem, offItem, lowMenuItem, highMenuItem] {
+            item?.isEnabled = live
+        }
+        chargingItem.isEnabled = live
+
+        let mode = status?.mode ?? cfg.mode
+        holdItem.state = (mode == .hold) ? .on : .off
+        autoItem.state = (mode == .auto) ? .on : .off
+        offItem.state  = (mode == .off)  ? .on : .off
+        autoItem.title = L("menu.charging.auto", cfg.low, cfg.high)
+
+        let chargingNow = status?.chargeNow ?? false
+        chargeItem.title = chargingNow ? L("menu.charging.chargingTo", cfg.high)
+                                       : L("menu.charging.chargeTo", cfg.high)
+        chargeItem.state = chargingNow ? .on : .off
+        chargeItem.isEnabled = live && !chargingNow && (status?.percentage ?? 0) < cfg.high
 
         for item in lowMenuItem.submenu?.items ?? [] { item.state = (item.tag == cfg.low) ? .on : .off }
         for item in highMenuItem.submenu?.items ?? [] { item.state = (item.tag == cfg.high) ? .on : .off }
-
-        footerItem.title = "BatLimit \(shortVersion) · \(st.api)"
     }
 
-    /// В строке меню показываем только то, что делает BatLimit. Процент заряда
-    /// не дублируем — его уже показывает системный индикатор батареи.
-    private func applyIndicator(_ st: Status?, live: Bool, starting: Bool) {
+    /// Режим энергии — системный переключатель: его меняют и в Настройках, и в
+    /// Пункте управления. Текущее значение читаем сами (прав для этого не
+    /// нужно), а менять умеет только служба — пока она молчит, показываем
+    /// правду, но переключать не даём: просьбу некому выполнить.
+    private func updateEnergyMenu(plugged: Bool, live: Bool) {
+        let current = EnergyModes.current(plugged: plugged)
+        for item in energyModeItems {
+            item.state = (item.tag == current?.pmsetValue) ? .on : .off
+            item.isEnabled = live
+            item.isHidden = (item.tag == EnergyMode.high.pmsetValue) && !supportsHighPower
+        }
+    }
+
+    /// Возможности машины за время работы не меняются — спрашиваем один раз.
+    private lazy var supportsHighPower = EnergyModes.supportsHigh()
+
+    private func applyIndicator(battery: BatteryInfo?, status: Status?, live: Bool, starting: Bool) {
         guard let button = statusItem.button else { return }
-        button.title = ""
 
-        guard let st, live else {
+        let percentage = battery?.percentage ?? status?.percentage
+        let plugged = battery?.isPluggedIn ?? status?.isPluggedIn ?? false
+        let charging = battery?.isCharging ?? status?.isCharging ?? false
+
+        let badge: BatteryGlyph.Badge
+        if !live {
             // При входе в систему приложение стартует раньше службы. Тревожить
-            // треугольником в это окно не за что: подождём и промолчим.
-            button.image = symbol(starting ? "battery.100percent" : "exclamationmark.triangle")
-            button.appearsDisabled = starting
-            button.toolTip = starting ? "BatLimit: служба запускается…"
-                                      : "BatLimit: служба не отвечает"
-            return
+            // восклицательным знаком в это окно не за что: подождём и промолчим.
+            badge = starting ? .none : .warning
+            button.toolTip = starting ? L("icon.tooltip.starting") : L("icon.tooltip.silent")
+        } else if let st = status {
+            // Команда отправлена, но контроллер заряда её ещё не применил —
+            // он перечитывает ключ раз в ~45–50 с. Показываем ожидание, а не
+            // желаемый результат: иначе значок врёт целую минуту.
+            if st.settling == true {
+                badge = .settling
+            } else if st.inhibited {
+                badge = .hold
+            } else if charging {
+                badge = .charging
+            } else if plugged {
+                badge = .plugged
+            } else {
+                badge = .none
+            }
+            button.toolTip = L("icon.tooltip", st.percentage, st.localizedPhase)
+        } else {
+            badge = .none
+            button.toolTip = nil
         }
 
-        // Команда отправлена, но контроллер заряда её ещё не применил —
-        // он перечитывает ключ раз в ~45–50 с. Показываем ожидание, а не
-        // желаемый результат: иначе значок врёт целую минуту.
-        guard st.settling != true else {
-            button.image = symbol("hourglass")
-            button.appearsDisabled = false
-            button.toolTip = "BatLimit · \(st.percentage) % · \(st.phase)"
-            return
+        button.image = BatteryGlyph.image(percentage: percentage ?? 0, badge: badge)
+        if AppPreferences.showPercentage {
+            // Цифры моноширинные: иначе значок дёргался бы на каждом проценте.
+            button.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+            button.title = percentage.map { L("menu.percent", $0) } ?? "—"
+            button.imagePosition = .imageTrailing
+        } else {
+            button.title = ""
+            button.imagePosition = .imageOnly
         }
-
-        switch st.mode {
-        case .off:
-            // Не вмешиваемся — значок приглушён, чтобы не притягивать взгляд.
-            button.image = symbol("battery.100percent")
-            button.appearsDisabled = true
-            button.toolTip = "BatLimit: не вмешивается"
-        case .hold, .auto:
-            button.image = symbol(st.inhibited ? "pause.fill" : "bolt.fill")
-            button.appearsDisabled = false
-            button.toolTip = "BatLimit · \(st.percentage) % · \(st.phase)"
-        }
-    }
-
-    private func symbol(_ name: String) -> NSImage? {
-        let image = NSImage(systemSymbolName: name, accessibilityDescription: nil)
-        image?.isTemplate = true
-        return image
     }
 
     // MARK: - Действия
@@ -549,8 +564,7 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         do {
             try cfg.save()
         } catch {
-            showError("Не удалось сохранить настройку",
-                      "\(Paths.config): \(error)\n\nПопробуй переустановить службу из меню.")
+            showError(L("alert.saveFailed.title"), L("alert.saveFailed.body", Paths.config, "\(error)"))
             return
         }
         refresh()
@@ -567,17 +581,63 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate {
         mutate { $0.mode = (current == .auto) ? .off : .auto; $0.chargeNow = false }
     }
 
-    @objc private func toggleLED() {
-        let current = Config.load().magsafeLED
-        mutate { $0.magsafeLED = !current }
+    @objc private func setEnergyMode(_ sender: NSMenuItem) {
+        guard let mode = EnergyMode.allCases.first(where: { $0.pmsetValue == sender.tag }) else { return }
+        mutate { $0.energyModeRequest = mode }
+    }
+
+    @objc private func openBatterySettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.Battery-Settings.extension")
+        else { return }
+        NSWorkspace.shared.open(url)
     }
 
     @objc private func openMonitor() { monitorWindow.show() }
+
+    @objc private func openSettings() { settingsWindow.show(actions: self) }
 
     @objc private func setLow(_ sender: NSMenuItem)  { mutate { $0.low = sender.tag } }
     @objc private func setHigh(_ sender: NSMenuItem) { mutate { $0.high = sender.tag } }
 
     @objc private func quit() { NSApplication.shared.terminate(nil) }
+
+    // MARK: - Запросы из окна настроек
+
+    var serviceInstallState: HelperInstaller.InstallState {
+        HelperInstaller.state(bundledVersion: daemonFingerprint)
+    }
+
+    var loginItemEnabled: Bool { loginState != .off }
+    var loginItemNeedsApproval: Bool { loginState == .needsApproval }
+
+    func settingsInstallService() {
+        // Машину проверяем до запроса пароля: ставить службу на Intel или на
+        // Mac без батареи бессмысленно.
+        let check = SystemCheck.run()
+        guard check.isSupported else {
+            showError(L("alert.unsupported.title"), check.summary)
+            return
+        }
+        performInstall()
+        settingsWindow.refresh()
+    }
+
+    func settingsUninstallService() {
+        uninstallHelper()
+        settingsWindow.refresh()
+    }
+
+    func settingsSetLoginItem(_ enabled: Bool) {
+        toggleLoginItem(enabled)
+    }
+
+    func settingsOpenLoginItems() {
+        SMAppService.openSystemSettingsLoginItems()
+    }
+
+    func settingsSetMagSafeLED(_ enabled: Bool) {
+        mutate { $0.magsafeLED = enabled }
+    }
 }
 
 // Второй экземпляр не нужен: включение автозапуска заставляет launchd поднять

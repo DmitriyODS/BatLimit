@@ -36,29 +36,33 @@ public struct Config: Codable, Equatable {
     public var high: Int         // верхний порог: до скольки заряжать
     public var chargeNow: Bool   // разовая зарядка до `high`, потом флаг сбрасывается
     public var magsafeLED: Bool  // подсвечивать разъём MagSafe зелёным, когда зарядка удержана
-    /// Просьба сменить режим энергии macOS. Это поручение, а не настройка:
-    /// менять режим может кто угодно — Настройки, Пункт управления, pmset, —
-    /// и удерживать его своим значением BatLimit не должен. Служба выполняет
-    /// просьбу и сразу гасит поле.
-    public var energyModeRequest: EnergyMode?
+    /// Просьба сменить режим энергии macOS — для батареи, для сети или для
+    /// обоих. Это поручение, а не настройка: менять режим может кто угодно —
+    /// Настройки, Пункт управления, pmset, — и удерживать его своим значением
+    /// BatLimit не должен. Служба выполняет просьбу и сразу гасит поле.
+    ///
+    /// Ключ не `energyModeRequest`: так называлась просьба 1.3.0, общая для
+    /// обоих источников, и строка на месте словаря сломала бы разбор всего
+    /// конфига — служба откатилась бы к режиму «выключено».
+    public var energyModeRequests: EnergyModePair?
 
     public static let fallback = Config(mode: .off, low: 30, high: 80,
                                         chargeNow: false, magsafeLED: true)
 
     public init(mode: Mode, low: Int, high: Int, chargeNow: Bool, magsafeLED: Bool = true,
-                energyModeRequest: EnergyMode? = nil) {
+                energyModeRequests: EnergyModePair? = nil) {
         self.mode = mode
         self.low = low
         self.high = high
         self.chargeNow = chargeNow
         self.magsafeLED = magsafeLED
-        self.energyModeRequest = energyModeRequest
+        self.energyModeRequests = energyModeRequests
         clamp()
     }
 
     /// Старые конфиги поля не содержат — считаем подсветку включённой.
     enum CodingKeys: String, CodingKey {
-        case mode, low, high, chargeNow, magsafeLED, energyModeRequest
+        case mode, low, high, chargeNow, magsafeLED, energyModeRequests
     }
 
     public init(from decoder: Decoder) throws {
@@ -68,7 +72,9 @@ public struct Config: Codable, Equatable {
         high = try c.decodeIfPresent(Int.self, forKey: .high) ?? 80
         chargeNow = try c.decodeIfPresent(Bool.self, forKey: .chargeNow) ?? false
         magsafeLED = try c.decodeIfPresent(Bool.self, forKey: .magsafeLED) ?? true
-        energyModeRequest = try c.decodeIfPresent(EnergyMode.self, forKey: .energyModeRequest)
+        // Непонятную просьбу пропускаем, а не роняем весь конфиг: она
+        // одноразовая, а режим зарядки из-за неё сбросился бы.
+        energyModeRequests = try? c.decodeIfPresent(EnergyModePair.self, forKey: .energyModeRequests)
         clamp()
     }
 
@@ -127,11 +133,9 @@ public struct Status: Codable {
     public var api: String
     public var minutesRemaining: Int?
     public var cycleCount: Int?
-    /// Режим энергии macOS для текущего источника питания и то, доступна ли
-    /// на этой машине высокая производительность. Читает служба, потому что
-    /// она же его и меняет, — приложению остаётся показать.
-    public var energyMode: EnergyMode?
-    public var highPowerAvailable: Bool?
+    /// Режим энергии macOS для батареи и для сети — для CLI и диагностики.
+    /// Приложение читает его само: для этого прав не нужно.
+    public var energyModes: EnergyModePair?
     /// Есть ли на этой машине разъём MagSafe со светодиодом: в SMC это видно
     /// только оттуда, где уже открыто соединение.
     public var magsafeLEDAvailable: Bool?
@@ -141,8 +145,8 @@ public struct Status: Codable {
     public init(percentage: Int, isCharging: Bool, isPluggedIn: Bool, inhibited: Bool,
                 settling: Bool, systemLimitActive: Bool, mode: Mode, low: Int, high: Int,
                 chargeNow: Bool, phase: String, phaseKind: PhaseKind? = nil, api: String,
-                minutesRemaining: Int?, cycleCount: Int?, energyMode: EnergyMode? = nil,
-                highPowerAvailable: Bool? = nil, magsafeLEDAvailable: Bool? = nil,
+                minutesRemaining: Int?, cycleCount: Int?, energyModes: EnergyModePair? = nil,
+                magsafeLEDAvailable: Bool? = nil,
                 error: String?, updatedAt: Date) {
         self.percentage = percentage
         self.isCharging = isCharging
@@ -159,8 +163,7 @@ public struct Status: Codable {
         self.api = api
         self.minutesRemaining = minutesRemaining
         self.cycleCount = cycleCount
-        self.energyMode = energyMode
-        self.highPowerAvailable = highPowerAvailable
+        self.energyModes = energyModes
         self.magsafeLEDAvailable = magsafeLEDAvailable
         self.error = error
         self.updatedAt = updatedAt

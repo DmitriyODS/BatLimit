@@ -44,6 +44,8 @@
 /* Управление энергией */
 "menu.energy" = "Управление энергией";
 "menu.energy.settings" = "Настройки батареи…";
+"menu.energy.battery" = "От батареи";
+"menu.energy.ac" = "От сети";
 "energy.automatic" = "Автоматически";
 "energy.low" = "Экономия энергии";
 "energy.high" = "Высокая производительность";

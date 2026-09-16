@@ -44,6 +44,8 @@
 /* Energy control */
 "menu.energy" = "Energy Control";
 "menu.energy.settings" = "Battery Settings…";
+"menu.energy.battery" = "On Battery";
+"menu.energy.ac" = "On Power Adapter";
 "energy.automatic" = "Automatic";
 "energy.low" = "Low Power";
 "energy.high" = "High Power";

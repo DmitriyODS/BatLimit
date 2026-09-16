@@ -32,7 +32,8 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate, Set
     private var highMenuItem: NSMenuItem!
 
     private var energyItem: NSMenuItem!
-    private var energyModeItems: [NSMenuItem] = []
+    /// Пункты режима энергии — у батареи и у сети свои, как в Настройках.
+    private var energyModeItems: [PowerSourceKey: [NSMenuItem]] = [:]
 
     private var monitorItem: NSMenuItem!
     private var settingsItem: NSMenuItem!
@@ -374,16 +375,35 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate, Set
         let submenu = NSMenu()
         submenu.autoenablesItems = false
 
-        energyModeItems = EnergyMode.allCases.map { mode in
-            let item = actionItem(mode.localizedName, #selector(setEnergyMode(_:)))
-            item.tag = mode.pmsetValue
-            submenu.addItem(item)
-            return item
+        for source in PowerSourceKey.allCases {
+            submenu.addItem(sectionHeader(source == .battery ? L("menu.energy.battery")
+                                                             : L("menu.energy.ac")))
+            energyModeItems[source] = EnergyMode.allCases.map { mode in
+                let item = actionItem(mode.localizedName, #selector(setEnergyMode(_:)))
+                item.tag = energyTag(source, mode)
+                submenu.addItem(item)
+                return item
+            }
+            submenu.addItem(.separator())
         }
 
-        submenu.addItem(.separator())
         submenu.addItem(actionItem(L("menu.energy.settings"), #selector(openBatterySettings)))
         return submenu
+    }
+
+    /// Номер пункта режима: источник и режим в одном числе — десятки
+    /// за источник, единицы за значение `powermode`.
+    private func energyTag(_ source: PowerSourceKey, _ mode: EnergyMode) -> Int {
+        (source == .battery ? 0 : 10) + mode.pmsetValue
+    }
+
+    /// Заголовок блока в меню. Настоящие заголовки появились в macOS 14,
+    /// на 13-й их заменяет неактивная строка.
+    private func sectionHeader(_ title: String) -> NSMenuItem {
+        if #available(macOS 14, *) {
+            return NSMenuItem.sectionHeader(title: title)
+        }
+        return disabledItem(title)
     }
 
     private func disabledItem(_ title: String) -> NSMenuItem {
@@ -426,9 +446,11 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate, Set
         let battery = Battery.read()
 
         let plugged = battery?.isPluggedIn ?? status?.isPluggedIn ?? false
-        let energy = EnergyModes.current(plugged: plugged)
+        let energy = EnergyModes.current()
 
-        applyIndicator(battery: battery, status: status, energy: energy,
+        // Цвет значка — режим того источника, от которого ноутбук работает
+        // сейчас: так же выбирает и сама macOS.
+        applyIndicator(battery: battery, status: status, energy: energy[plugged ? .ac : .battery],
                        live: live, starting: starting)
         updateServiceItem(installState)
         updateChargingMenu(cfg: cfg, status: status, live: live)
@@ -502,16 +524,19 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate, Set
     /// Пункте управления. Текущее значение читаем сами (прав для этого не
     /// нужно), а менять умеет только служба — пока она молчит, показываем
     /// правду, но переключать не даём: просьбу некому выполнить.
-    private func updateEnergyMenu(current: EnergyMode?, live: Bool) {
-        for item in energyModeItems {
-            item.state = (item.tag == current?.pmsetValue) ? .on : .off
-            item.isEnabled = live
-            item.isHidden = (item.tag == EnergyMode.high.pmsetValue) && !supportsHighPower
+    private func updateEnergyMenu(current: EnergyModePair, live: Bool) {
+        for (source, items) in energyModeItems {
+            for (mode, item) in zip(EnergyMode.allCases, items) {
+                item.state = (current[source] == mode) ? .on : .off
+                item.isEnabled = live
+                item.isHidden = mode == .high && !supportsHighPower[source, default: false]
+            }
         }
     }
 
     /// Возможности машины за время работы не меняются — спрашиваем один раз.
-    private lazy var supportsHighPower = EnergyModes.supportsHigh()
+    private lazy var supportsHighPower: [PowerSourceKey: Bool] = Dictionary(
+        uniqueKeysWithValues: PowerSourceKey.allCases.map { ($0, EnergyModes.supportsHigh(source: $0)) })
 
     private func applyIndicator(battery: BatteryInfo?, status: Status?, energy: EnergyMode?,
                                 live: Bool, starting: Bool) {
@@ -602,8 +627,16 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate, Set
     }
 
     @objc private func setEnergyMode(_ sender: NSMenuItem) {
-        guard let mode = EnergyMode.allCases.first(where: { $0.pmsetValue == sender.tag }) else { return }
-        mutate { $0.energyModeRequest = mode }
+        let source: PowerSourceKey = sender.tag >= 10 ? .ac : .battery
+        guard let mode = EnergyMode.allCases.first(where: { energyTag(source, $0) == sender.tag })
+        else { return }
+        // Просьбу для другого источника, ещё не выполненную службой, не
+        // затираем: два щелчка подряд должны сработать оба.
+        mutate { cfg in
+            var requests = cfg.energyModeRequests ?? EnergyModePair()
+            requests[source] = mode
+            cfg.energyModeRequests = requests
+        }
     }
 
     @objc private func openBatterySettings() {

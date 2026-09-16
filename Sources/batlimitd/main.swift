@@ -46,10 +46,9 @@ final class Daemon {
     private static let ledDebounce: TimeInterval = 5
     /// Режим энергии macOS. Перечитываем раз в несколько секунд: его меняют
     /// не только через нас, но и в Настройках, и в Пункте управления.
-    private var energyMode: EnergyMode?
+    private var energyModes = EnergyModePair()
     private var lastEnergyModeRead = Date.distantPast
     private static let energyModeInterval: TimeInterval = 5
-    private lazy var highPowerAvailable = EnergyModes.supportsHigh()
     private var lastHistoryWrite = Date.distantPast
     private var lastLogRotateCheck = Date.distantPast
     private var lastTrim = Date.distantPast
@@ -112,7 +111,7 @@ final class Daemon {
 
         updateOneShot(cfg: &cfg, battery: bat)
         applyEnergyModeRequest(cfg: &cfg)
-        refreshEnergyMode(battery: bat)
+        refreshEnergyMode()
 
         // Инициализация фазы при первом тике и при входе в авто-режим.
         if lastMode == nil || lastMode != cfg.mode {
@@ -189,28 +188,35 @@ final class Daemon {
     /// пользователя системный переключатель. Поэтому поле в конфиге живёт
     /// ровно один тик: применили — стёрли.
     private func applyEnergyModeRequest(cfg: inout Config) {
-        guard let requested = cfg.energyModeRequest else { return }
-        do {
-            try EnergyModes.apply(requested)
-            log("Режим энергии: \(requested.humanReadable)")
-            lastError = nil
-        } catch {
-            let message = "\(error)"
-            if lastError != message { log("Не удалось сменить режим энергии: \(message)") }
-            lastError = message
+        guard let requests = cfg.energyModeRequests else { return }
+        // У батареи и у сети свои режимы, как в Настройках: просьба может
+        // касаться одного источника, другого или обоих.
+        for source in PowerSourceKey.allCases {
+            guard let requested = requests[source] else { continue }
+            do {
+                try EnergyModes.apply(requested, source: source)
+                log("Режим энергии \(source.humanReadable): \(requested.humanReadable)")
+                lastError = nil
+            } catch {
+                let message = "\(error)"
+                if lastError != message {
+                    log("Не удалось сменить режим энергии \(source.humanReadable): \(message)")
+                }
+                lastError = message
+            }
         }
-        cfg.energyModeRequest = nil
+        cfg.energyModeRequests = nil
         try? cfg.save()
         restoreConfigOwnership()
         // Своё же изменение показываем сразу, не дожидаясь очередного опроса.
         lastEnergyModeRead = .distantPast
     }
 
-    private func refreshEnergyMode(battery bat: BatteryInfo) {
+    private func refreshEnergyMode() {
         let now = Date()
         guard now.timeIntervalSince(lastEnergyModeRead) >= Daemon.energyModeInterval else { return }
         lastEnergyModeRead = now
-        energyMode = EnergyModes.current(plugged: bat.isPluggedIn)
+        energyModes = EnergyModes.current()
     }
 
     /// Единственное место, где решается, можно ли заряжать.
@@ -503,8 +509,7 @@ final class Daemon {
                             api: controller.api.rawValue,
                             minutesRemaining: bat.isCharging ? bat.minutesToFull : bat.minutesToEmpty,
                             cycleCount: bat.cycleCount,
-                            energyMode: energyMode,
-                            highPowerAvailable: highPowerAvailable,
+                            energyModes: energyModes,
                             magsafeLEDAvailable: controller.hasMagSafeLED,
                             error: lastError,
                             updatedAt: Date())
@@ -514,7 +519,7 @@ final class Daemon {
         let fingerprint = "\(status.percentage)|\(status.isCharging)|\(status.isPluggedIn)|"
             + "\(status.inhibited)|\(status.settling ?? false)|\(status.mode)|"
             + "\(status.low)|\(status.high)|\(status.chargeNow)|"
-            + "\(status.phase)|\(status.energyMode?.rawValue ?? "")|\(status.error ?? "")"
+            + "\(status.phase)|\(status.energyModes?.battery?.rawValue ?? "")/\(status.energyModes?.ac?.rawValue ?? "")|\(status.error ?? "")"
         let stale = Date().timeIntervalSince(lastStatusWrite) > 15
         guard fingerprint != lastWrittenStatus || stale else { return }
 

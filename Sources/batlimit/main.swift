@@ -106,6 +106,9 @@ func printStatus() {
     if let cycles = st.cycleCount {
         print(dim("циклов зарядки: \(cycles)"))
     }
+    if let energy = st.energyMode {
+        print(dim("режим энергии: \(energy.humanReadable)"))
+    }
     if st.settling == true {
         print(dim("команда отправлена — контроллер применит её в течение ~минуты"))
     }

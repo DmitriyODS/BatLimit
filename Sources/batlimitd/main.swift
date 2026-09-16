@@ -44,6 +44,12 @@ final class Daemon {
     private var pendingLEDSince = Date.distantPast
     /// Сколько желаемый цвет должен продержаться, прежде чем его применять.
     private static let ledDebounce: TimeInterval = 5
+    /// Режим энергии macOS. Перечитываем раз в несколько секунд: его меняют
+    /// не только через нас, но и в Настройках, и в Пункте управления.
+    private var energyMode: EnergyMode?
+    private var lastEnergyModeRead = Date.distantPast
+    private static let energyModeInterval: TimeInterval = 5
+    private lazy var highPowerAvailable = EnergyModes.supportsHigh()
     private var lastHistoryWrite = Date.distantPast
     private var lastLogRotateCheck = Date.distantPast
     private var lastTrim = Date.distantPast
@@ -105,6 +111,8 @@ final class Daemon {
         }
 
         updateOneShot(cfg: &cfg, battery: bat)
+        applyEnergyModeRequest(cfg: &cfg)
+        refreshEnergyMode(battery: bat)
 
         // Инициализация фазы при первом тике и при входе в авто-режим.
         if lastMode == nil || lastMode != cfg.mode {
@@ -172,6 +180,37 @@ final class Daemon {
         // Мы под root: без этого перезаписанный конфиг остался бы
         // с группой wheel, и приложение больше не смогло бы его менять.
         restoreConfigOwnership()
+    }
+
+    /// Выполняет просьбу сменить режим энергии и гасит её.
+    ///
+    /// Режим не наш: его меняют и в Настройках, и в Пункте управления, и
+    /// удерживать его своим значением мы не вправе — иначе отняли бы у
+    /// пользователя системный переключатель. Поэтому поле в конфиге живёт
+    /// ровно один тик: применили — стёрли.
+    private func applyEnergyModeRequest(cfg: inout Config) {
+        guard let requested = cfg.energyModeRequest else { return }
+        do {
+            try EnergyModes.apply(requested)
+            log("Режим энергии: \(requested.humanReadable)")
+            lastError = nil
+        } catch {
+            let message = "\(error)"
+            if lastError != message { log("Не удалось сменить режим энергии: \(message)") }
+            lastError = message
+        }
+        cfg.energyModeRequest = nil
+        try? cfg.save()
+        restoreConfigOwnership()
+        // Своё же изменение показываем сразу, не дожидаясь очередного опроса.
+        lastEnergyModeRead = .distantPast
+    }
+
+    private func refreshEnergyMode(battery bat: BatteryInfo) {
+        let now = Date()
+        guard now.timeIntervalSince(lastEnergyModeRead) >= Daemon.energyModeInterval else { return }
+        lastEnergyModeRead = now
+        energyMode = EnergyModes.current(plugged: bat.isPluggedIn)
     }
 
     /// Единственное место, где решается, можно ли заряжать.
@@ -447,6 +486,7 @@ final class Daemon {
     }
 
     private func writeStatus(cfg: Config, bat: BatteryInfo, allowed: Bool, state: ChargeState) {
+        let phase = describePhase(cfg: cfg, bat: bat, allowed: allowed, state: state)
         let status = Status(percentage: bat.percentage,
                             isCharging: bat.isCharging,
                             isPluggedIn: bat.isPluggedIn,
@@ -457,11 +497,15 @@ final class Daemon {
                             low: cfg.low,
                             high: cfg.high,
                             chargeNow: oneShot,
-                            phase: describePhase(cfg: cfg, bat: bat, allowed: allowed,
-                                                 state: state),
+                            phase: phase.russian(plugged: bat.isPluggedIn,
+                                                 low: cfg.low, high: cfg.high),
+                            phaseKind: phase,
                             api: controller.api.rawValue,
                             minutesRemaining: bat.isCharging ? bat.minutesToFull : bat.minutesToEmpty,
                             cycleCount: bat.cycleCount,
+                            energyMode: energyMode,
+                            highPowerAvailable: highPowerAvailable,
+                            magsafeLEDAvailable: controller.hasMagSafeLED,
                             error: lastError,
                             updatedAt: Date())
 
@@ -470,7 +514,7 @@ final class Daemon {
         let fingerprint = "\(status.percentage)|\(status.isCharging)|\(status.isPluggedIn)|"
             + "\(status.inhibited)|\(status.settling ?? false)|\(status.mode)|"
             + "\(status.low)|\(status.high)|\(status.chargeNow)|"
-            + "\(status.phase)|\(status.error ?? "")"
+            + "\(status.phase)|\(status.energyMode?.rawValue ?? "")|\(status.error ?? "")"
         let stale = Date().timeIntervalSince(lastStatusWrite) > 15
         guard fingerprint != lastWrittenStatus || stale else { return }
 
@@ -484,38 +528,29 @@ final class Daemon {
     }
 
     private func describePhase(cfg: Config, bat: BatteryInfo, allowed: Bool,
-                               state: ChargeState) -> String {
-        let source = bat.isPluggedIn ? "от сети" : "от батареи"
-        if controller.api == .unknown { return "нечем управлять зарядкой" }
+                               state: ChargeState) -> PhaseKind {
+        if controller.api == .unknown { return .noController }
 
         // Контроллер применяет команду не сразу — не делаем вид, что уже готово.
         if state.settling {
-            return allowed ? "\(source), снимаю блокировку — применяется…"
-                           : "\(source), блокирую зарядку — применяется…"
+            return allowed ? .releasing : .inhibiting
         }
         // Системный лимит macOS — второй, независимый замок: он держит зарядку
         // своим битом 24 и нашим ключом не открывается.
         if allowed && bat.isPluggedIn && systemLimitIsForeign(bat) && bat.percentage < cfg.high {
-            return "от сети, зарядку держит системный лимит macOS"
+            return .systemLimitHolds
         }
         // Окно ожидания вышло, а запрет так и не подействовал — это аномалия,
         // и молчать о ней нельзя: пользователь видит, что батарея заряжается.
         if state.requested && !state.effective && bat.isCharging {
-            return "от сети, зарядка идёт, хотя запрет выставлен"
+            return .inhibitIgnored
         }
-        if oneShot { return "\(source), заряжаю до \(cfg.high)% (разово)" }
+        if oneShot { return .oneShot }
 
         switch cfg.mode {
-        case .off:
-            return "\(source), не вмешиваюсь"
-        case .hold:
-            return bat.isPluggedIn ? "от сети, зарядка заблокирована" : "от батареи, зарядка заблокирована"
-        case .auto:
-            if allowed {
-                return "\(source), заряжаю до \(cfg.high)%"
-            } else {
-                return "\(source), жду разряда до \(cfg.low)%"
-            }
+        case .off:  return .notManaging
+        case .hold: return .blocked
+        case .auto: return allowed ? .chargingToHigh : .waitingForLow
         }
     }
 
@@ -555,7 +590,9 @@ final class Daemon {
         if var status = Status.load() {
             status.inhibited = false
             status.settling = false
-            status.phase = "демон остановлен"
+            status.phaseKind = .daemonStopped
+            status.phase = PhaseKind.daemonStopped.russian(plugged: status.isPluggedIn,
+                                                           low: status.low, high: status.high)
             status.updatedAt = Date()
             try? status.save()
         }

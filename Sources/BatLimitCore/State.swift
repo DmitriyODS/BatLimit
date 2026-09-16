@@ -36,22 +36,29 @@ public struct Config: Codable, Equatable {
     public var high: Int         // верхний порог: до скольки заряжать
     public var chargeNow: Bool   // разовая зарядка до `high`, потом флаг сбрасывается
     public var magsafeLED: Bool  // подсвечивать разъём MagSafe зелёным, когда зарядка удержана
+    /// Просьба сменить режим энергии macOS. Это поручение, а не настройка:
+    /// менять режим может кто угодно — Настройки, Пункт управления, pmset, —
+    /// и удерживать его своим значением BatLimit не должен. Служба выполняет
+    /// просьбу и сразу гасит поле.
+    public var energyModeRequest: EnergyMode?
 
     public static let fallback = Config(mode: .off, low: 30, high: 80,
                                         chargeNow: false, magsafeLED: true)
 
-    public init(mode: Mode, low: Int, high: Int, chargeNow: Bool, magsafeLED: Bool = true) {
+    public init(mode: Mode, low: Int, high: Int, chargeNow: Bool, magsafeLED: Bool = true,
+                energyModeRequest: EnergyMode? = nil) {
         self.mode = mode
         self.low = low
         self.high = high
         self.chargeNow = chargeNow
         self.magsafeLED = magsafeLED
+        self.energyModeRequest = energyModeRequest
         clamp()
     }
 
     /// Старые конфиги поля не содержат — считаем подсветку включённой.
     enum CodingKeys: String, CodingKey {
-        case mode, low, high, chargeNow, magsafeLED
+        case mode, low, high, chargeNow, magsafeLED, energyModeRequest
     }
 
     public init(from decoder: Decoder) throws {
@@ -61,6 +68,7 @@ public struct Config: Codable, Equatable {
         high = try c.decodeIfPresent(Int.self, forKey: .high) ?? 80
         chargeNow = try c.decodeIfPresent(Bool.self, forKey: .chargeNow) ?? false
         magsafeLED = try c.decodeIfPresent(Bool.self, forKey: .magsafeLED) ?? true
+        energyModeRequest = try c.decodeIfPresent(EnergyMode.self, forKey: .energyModeRequest)
         clamp()
     }
 
@@ -112,17 +120,30 @@ public struct Status: Codable {
     public var low: Int
     public var high: Int
     public var chargeNow: Bool
-    public var phase: String            // человекочитаемое «что сейчас делаем»
+    public var phase: String            // человекочитаемое «что сейчас делаем», по-русски
+    /// То же самое в машиночитаемом виде: приложение подбирает слова само,
+    /// на языке пользователя. Optional — старый демон поля не пишет.
+    public var phaseKind: PhaseKind?
     public var api: String
     public var minutesRemaining: Int?
     public var cycleCount: Int?
+    /// Режим энергии macOS для текущего источника питания и то, доступна ли
+    /// на этой машине высокая производительность. Читает служба, потому что
+    /// она же его и меняет, — приложению остаётся показать.
+    public var energyMode: EnergyMode?
+    public var highPowerAvailable: Bool?
+    /// Есть ли на этой машине разъём MagSafe со светодиодом: в SMC это видно
+    /// только оттуда, где уже открыто соединение.
+    public var magsafeLEDAvailable: Bool?
     public var error: String?
     public var updatedAt: Date
 
     public init(percentage: Int, isCharging: Bool, isPluggedIn: Bool, inhibited: Bool,
                 settling: Bool, systemLimitActive: Bool, mode: Mode, low: Int, high: Int,
-                chargeNow: Bool, phase: String, api: String, minutesRemaining: Int?,
-                cycleCount: Int?, error: String?, updatedAt: Date) {
+                chargeNow: Bool, phase: String, phaseKind: PhaseKind? = nil, api: String,
+                minutesRemaining: Int?, cycleCount: Int?, energyMode: EnergyMode? = nil,
+                highPowerAvailable: Bool? = nil, magsafeLEDAvailable: Bool? = nil,
+                error: String?, updatedAt: Date) {
         self.percentage = percentage
         self.isCharging = isCharging
         self.isPluggedIn = isPluggedIn
@@ -134,9 +155,13 @@ public struct Status: Codable {
         self.high = high
         self.chargeNow = chargeNow
         self.phase = phase
+        self.phaseKind = phaseKind
         self.api = api
         self.minutesRemaining = minutesRemaining
         self.cycleCount = cycleCount
+        self.energyMode = energyMode
+        self.highPowerAvailable = highPowerAvailable
+        self.magsafeLEDAvailable = magsafeLEDAvailable
         self.error = error
         self.updatedAt = updatedAt
     }

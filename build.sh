@@ -3,6 +3,9 @@
 # устанавливает свою службу само, при первом запуске.
 #   ./build.sh          собрать
 #   ./build.sh install  собрать и положить в /Applications
+#
+# Для проверки обновлений без публикации: BATLIMIT_VERSION, BATLIMIT_BUILD и
+# BATLIMIT_FEED_URL подменяют версию, номер сборки и адрес appcast.xml.
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -14,9 +17,16 @@ cd "$PROJECT_DIR"
 # за выпуск.
 GIT_DESCRIBE="$(git describe --tags --always --dirty 2>/dev/null || true)"
 VERSION="$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || true)"
-VERSION="${VERSION:-0.0}"
-BUILD_NUMBER="$(git rev-list --count HEAD 2>/dev/null || date +%Y%m%d%H%M)"
+VERSION="${BATLIMIT_VERSION:-${VERSION:-0.0}}"
+BUILD_NUMBER="${BATLIMIT_BUILD:-$(git rev-list --count HEAD 2>/dev/null || date +%Y%m%d%H%M)}"
 OUT_DIR="$PROJECT_DIR/build"
+
+# Обновления (Sparkle). Номер сборки должен только расти: по нему Sparkle и
+# решает, новее ли версия в appcast. Лента — всегда из последнего релиза.
+FEED_URL="${BATLIMIT_FEED_URL:-https://github.com/DmitriyODS/BatLimit/releases/latest/download/appcast.xml}"
+# Открытая половина ключа EdDSA. Закрытая — в связке ключей того, кто
+# выпускает релизы (учётная запись «batlimit»); ею подписан каждый архив.
+SPARKLE_PUBLIC_KEY="PLC16mw6kv6cDo4IZ89UU9eB0dr9+JXVSEmfU/TBNkA="
 APP="$OUT_DIR/BatLimit.app"
 
 if [[ -n "$GIT_DESCRIBE" ]]; then
@@ -35,13 +45,15 @@ BIN="$(swift build -c release --arch arm64 --show-bin-path)"
 
 echo "==> Формирование $APP"
 rm -rf "$OUT_DIR"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 
 install -m 755 "$BIN/BatLimitApp" "$APP/Contents/MacOS/BatLimit"
 install -m 755 "$BIN/batlimitd"   "$APP/Contents/Resources/batlimitd"
 install -m 755 "$BIN/batlimit"    "$APP/Contents/Resources/batlimit"
 install -m 755 "$PROJECT_DIR/Resources/install-helper.sh"   "$APP/Contents/Resources/"
 install -m 755 "$PROJECT_DIR/Resources/uninstall-helper.sh" "$APP/Contents/Resources/"
+# ditto, а не cp: внутри фреймворка символические ссылки Versions/Current.
+ditto "$BIN/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
 
 # Переводы. Язык выбирает macOS по списку предпочтений пользователя: каталог
 # <язык>.lproj внутри Resources — единственное, что для этого нужно.
@@ -80,6 +92,11 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>LSApplicationCategoryType</key>    <string>public.app-category.utilities</string>
     <key>NSHumanReadableCopyright</key>     <string>BatLimit $VERSION</string>
     <key>BLGitDescribe</key>                <string>${GIT_DESCRIBE:-неизвестно}</string>
+    <key>SUFeedURL</key>                    <string>$FEED_URL</string>
+    <key>SUPublicEDKey</key>                <string>$SPARKLE_PUBLIC_KEY</string>
+    <!-- Проверять раз в сутки, не спрашивая разрешения при втором запуске:
+         выключается в настройках BatLimit -->
+    <key>SUEnableAutomaticChecks</key>      <true/>
 $ICON_ENTRY
     <!-- Живёт только в строке меню: без окна и без значка в Dock -->
     <key>LSUIElement</key>                  <true/>
@@ -88,8 +105,22 @@ $ICON_ENTRY
 PLIST
 
 # Ad-hoc подпись: Developer ID нет, но без всякой подписи macOS ругается сильнее.
-codesign --force --deep --sign - "$APP" >/dev/null 2>&1 \
+# Подписываем изнутри наружу. Фреймворк Sparkle переподписываем тоже: его
+# установщик сверяет подпись с приложением, и чужая команда разработчика
+# рядом с ad-hoc приложением этой сверки не прошла бы.
+SPARKLE="$APP/Contents/Frameworks/Sparkle.framework/Versions/B"
+for PART in "$SPARKLE/XPCServices/Downloader.xpc" "$SPARKLE/XPCServices/Installer.xpc" \
+            "$SPARKLE/Autoupdate" "$SPARKLE/Updater.app" "$APP/Contents/Frameworks/Sparkle.framework"; do
+    [[ -e "$PART" ]] || continue
+    codesign --force --sign - --preserve-metadata=entitlements "$PART" >/dev/null 2>&1 \
+        || { echo "не удалось подписать $PART" >&2; exit 1; }
+done
+codesign --force --sign - "$APP" >/dev/null 2>&1 \
     || echo "    (подписать не удалось — приложение всё равно запустится)"
+
+# Архив для Sparkle. Образ — для людей, а обновлению удобнее zip: ditto
+# сохраняет символические ссылки фреймворка, обычный zip их бы развернул.
+ditto -c -k --sequesterRsrc --keepParent "$APP" "$OUT_DIR/BatLimit.zip"
 
 echo "==> Сборка образа BatLimit.dmg"
 VOLNAME="BatLimit"
@@ -163,6 +194,7 @@ echo
 echo "Готово:"
 echo "  $APP"
 echo "  $OUT_DIR/BatLimit.dmg"
+echo "  $OUT_DIR/BatLimit.zip   (для обновления через Sparkle)"
 
 if [[ "${1:-}" == "install" ]]; then
     echo

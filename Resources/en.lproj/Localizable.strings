@@ -153,3 +153,10 @@
 
 /* Energy mode in the icon tooltip */
 "icon.tooltip.energy" = "energy mode: %@";
+
+/* Updates */
+"menu.update.available" = "Version %@ Available…";
+"settings.section.updates" = "Updates";
+"settings.updates.auto" = "Check for updates automatically";
+"settings.updates.check" = "Check Now";
+"settings.updates.note" = "Once a day BatLimit looks for a new version on GitHub and asks whether to install it. The download is verified by its signature. The administrator password is asked for only if the new version changes the service.";

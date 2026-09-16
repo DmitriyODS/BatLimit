@@ -18,6 +18,10 @@ protocol SettingsActions: AnyObject {
     func settingsSetLoginItem(_ enabled: Bool)
     func settingsOpenLoginItems()
     func settingsSetMagSafeLED(_ enabled: Bool)
+
+    var automaticallyChecksForUpdates: Bool { get set }
+    var canCheckForUpdates: Bool { get }
+    func settingsCheckForUpdates()
 }
 
 final class SettingsModel: ObservableObject {
@@ -28,6 +32,8 @@ final class SettingsModel: ObservableObject {
     @Published private(set) var magsafeLED = true
     @Published private(set) var magsafeAvailable = true
     @Published private(set) var api: String?
+    @Published private(set) var autoUpdates = true
+    @Published private(set) var canCheckForUpdates = true
 
     weak var actions: SettingsActions?
     private var timer: Timer?
@@ -67,6 +73,13 @@ final class SettingsModel: ObservableObject {
         // пользователя надписью «нет MagSafe» на машине, где он есть.
         magsafeAvailable = status?.magsafeLEDAvailable ?? true
         api = live ? status?.api : nil
+        autoUpdates = actions?.automaticallyChecksForUpdates ?? true
+        canCheckForUpdates = actions?.canCheckForUpdates ?? false
+    }
+
+    func setAutoUpdates(_ enabled: Bool) {
+        autoUpdates = enabled
+        actions?.automaticallyChecksForUpdates = enabled
     }
 
     func setMagSafeLED(_ enabled: Bool) {
@@ -82,10 +95,11 @@ struct SettingsView: View {
         Form {
             generalSection
             magsafeSection
+            updatesSection
             serviceSection
         }
         .formStyle(.grouped)
-        .frame(width: 460, height: 500)
+        .frame(width: 460, height: 620)
     }
 
     // MARK: - Основные
@@ -129,6 +143,29 @@ struct SettingsView: View {
         }
     }
 
+    // MARK: - Обновления
+
+    private var updatesSection: some View {
+        Section(L("settings.section.updates")) {
+            Toggle(L("settings.updates.auto"), isOn: Binding(
+                get: { model.autoUpdates },
+                set: { model.setAutoUpdates($0) }))
+
+            LabeledContent(L("settings.version")) {
+                HStack {
+                    Text(SettingsView.versionText).foregroundStyle(.secondary)
+                    Button(L("settings.updates.check")) {
+                        model.actions?.settingsCheckForUpdates()
+                    }
+                    .disabled(!model.canCheckForUpdates)
+                }
+            }
+
+            Text(L("settings.updates.note"))
+                .font(.callout).foregroundStyle(.secondary)
+        }
+    }
+
     // MARK: - Служба
 
     private var serviceSection: some View {
@@ -164,7 +201,6 @@ struct SettingsView: View {
             Text(L("settings.service.note"))
                 .font(.callout).foregroundStyle(.secondary)
 
-            LabeledContent(L("settings.version"), value: SettingsView.versionText)
             if let api = model.api {
                 LabeledContent(L("settings.api"), value: api)
             }
@@ -212,7 +248,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 500),
+            contentRect: NSRect(x: 0, y: 0, width: 460, height: 620),
             styleMask: [.titled, .closable],
             backing: .buffered, defer: false)
         window.title = L("settings.title")

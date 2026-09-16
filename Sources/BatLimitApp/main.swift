@@ -38,8 +38,12 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate, Set
     private var monitorItem: NSMenuItem!
     private var settingsItem: NSMenuItem!
 
+    /// Появляется, только когда фоновая проверка нашла новую версию.
+    private var updateItem: NSMenuItem!
+
     private let monitorWindow = MonitorWindowController()
     private let settingsWindow = SettingsWindowController()
+    private var updates: UpdateController!
 
     private var version: String {
         Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "dev"
@@ -65,6 +69,9 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate, Set
         statusItem.menu = menu
         migrateLegacyLoginAgent()
         refresh()
+
+        updates = UpdateController()
+        updates.onPendingChange = { [weak self] in self?.updatePendingUpdateItem() }
 
         // Таймер добавляем в общие режимы: в `.default` он замирает, пока
         // открыто меню, — а именно там на него и смотрят. Из-за этого
@@ -318,6 +325,10 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate, Set
         serviceItem = actionItem(L("menu.service.install"), #selector(openSettings))
         serviceItem.isHidden = true
         menu.addItem(serviceItem)
+
+        updateItem = actionItem("", #selector(showPendingUpdate))
+        updateItem.isHidden = true
+        menu.addItem(updateItem)
 
         menu.addItem(.separator())
 
@@ -647,6 +658,17 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate, Set
 
     @objc private func openMonitor() { monitorWindow.show() }
 
+    @objc private func showPendingUpdate() { updates.checkNow() }
+
+    private func updatePendingUpdateItem() {
+        guard let version = updates.pendingVersion else {
+            updateItem.isHidden = true
+            return
+        }
+        updateItem.title = L("menu.update.available", version)
+        updateItem.isHidden = false
+    }
+
     @objc private func openSettings() { settingsWindow.show(actions: self) }
 
     @objc private func setLow(_ sender: NSMenuItem)  { mutate { $0.low = sender.tag } }
@@ -690,6 +712,17 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate, Set
 
     func settingsSetMagSafeLED(_ enabled: Bool) {
         mutate { $0.magsafeLED = enabled }
+    }
+
+    var automaticallyChecksForUpdates: Bool {
+        get { updates.automaticallyChecks }
+        set { updates.automaticallyChecks = newValue }
+    }
+
+    var canCheckForUpdates: Bool { updates.canCheck }
+
+    func settingsCheckForUpdates() {
+        updates.checkNow()
     }
 }
 

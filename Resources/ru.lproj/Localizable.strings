@@ -1,0 +1,150 @@
+/* Русские тексты интерфейса BatLimit. Ключи — в Sources/BatLimitApp. */
+
+/* Источник питания — подставляется в фразы о состоянии */
+"source.ac" = "от сети";
+"source.battery" = "от батареи";
+
+/* Что служба делает с зарядкой прямо сейчас */
+"phase.noController" = "нечем управлять зарядкой";
+"phase.releasing" = "%@, снимаю блокировку — применяется…";
+"phase.inhibiting" = "%@, блокирую зарядку — применяется…";
+"phase.systemLimitHolds" = "от сети, зарядку держит системный лимит macOS";
+"phase.inhibitIgnored" = "от сети, зарядка идёт, хотя запрет выставлен";
+"phase.oneShot" = "%1$@, заряжаю до %2$d %% (разово)";
+"phase.notManaging" = "%@, не вмешиваюсь";
+"phase.blocked" = "%@, зарядка заблокирована";
+"phase.chargingToHigh" = "%1$@, заряжаю до %2$d %%";
+"phase.waitingForLow" = "%1$@, жду разряда до %2$d %%";
+"phase.daemonStopped" = "служба остановлена";
+
+/* Верх меню */
+"menu.title" = "%1$d %% · %2$@";
+"menu.percent" = "%d %%";
+"menu.error" = "ошибка: %@";
+"menu.warning.systemLimit" = "⚠︎ Зарядку держит системный лимит macOS";
+
+/* Служба */
+"menu.service.install" = "Установить службу…";
+"menu.service.update" = "Обновить службу…";
+"menu.service.starting" = "Служба запускается…";
+"menu.service.silent" = "Служба не отвечает";
+"menu.service.missing" = "Служба не установлена";
+"menu.service.unavailable" = "Управление зарядкой недоступно";
+
+/* Управление зарядом */
+"menu.charging" = "Управление зарядом";
+"menu.charging.hold" = "Не заряжать";
+"menu.charging.chargeTo" = "Зарядить до %d %%";
+"menu.charging.chargingTo" = "Заряжаю до %d %%…";
+"menu.charging.auto" = "Авто: держать %1$d–%2$d %%";
+"menu.charging.off" = "Заряжать как обычно";
+"menu.charging.low" = "Нижний порог";
+"menu.charging.high" = "Верхний порог";
+
+/* Управление энергией */
+"menu.energy" = "Управление энергией";
+"menu.energy.settings" = "Настройки батареи…";
+"energy.automatic" = "Автоматически";
+"energy.low" = "Экономия энергии";
+"energy.high" = "Высокая производительность";
+
+/* Остальное меню */
+"menu.monitor" = "Панель мониторинга…";
+"menu.settings" = "Настройки…";
+"menu.quit" = "Выйти";
+
+/* Подсказки значка в строке меню */
+"icon.tooltip" = "BatLimit · %1$d %% · %2$@";
+"icon.tooltip.starting" = "BatLimit: служба запускается…";
+"icon.tooltip.silent" = "BatLimit: служба не отвечает";
+
+/* Диалоги */
+"alert.unsupported.title" = "BatLimit не поддерживает этот Mac";
+"alert.install.title" = "Установить службу BatLimit?";
+"alert.install.body" = "Чтобы управлять зарядкой, нужна фоновая служба с правами администратора — она единственная обращается к контроллеру питания.\n\nПароль спросят один раз. Удалить службу можно в настройках BatLimit.";
+"alert.install.ok" = "Установить";
+"alert.install.cancel" = "Не сейчас";
+"alert.update.title" = "Обновить службу BatLimit?";
+"alert.update.body" = "Установлена служба от другой сборки приложения. Обновление займёт пару секунд и потребует пароль администратора.";
+"alert.update.ok" = "Обновить";
+"alert.update.cancel" = "Позже";
+"alert.uninstall.title" = "Удалить службу BatLimit?";
+"alert.uninstall.body" = "Зарядка вернётся в обычный режим. Само приложение останется — службу можно поставить снова из настроек.";
+"alert.uninstall.ok" = "Удалить";
+"alert.uninstall.cancel" = "Отмена";
+"alert.incomplete.title" = "Приложение собрано неполностью";
+"alert.incomplete.install" = "Внутри бандла нет install-helper.sh или batlimitd.";
+"alert.incomplete.uninstall" = "Внутри бандла нет uninstall-helper.sh.";
+"alert.installFailed.title" = "Не удалось установить службу";
+"alert.uninstallFailed.title" = "Не удалось удалить службу";
+"alert.saveFailed.title" = "Не удалось сохранить настройку";
+"alert.saveFailed.body" = "%1$@: %2$@\n\nПопробуй переустановить службу в настройках.";
+"alert.loginFailed.title" = "Не удалось изменить автозапуск";
+"alert.loginApproval.title" = "Разреши запуск при входе";
+"alert.loginApproval.body" = "macOS требует подтверждения: включи BatLimit в разделе «Элементы входа» системных настроек.";
+"alert.loginApproval.ok" = "Открыть настройки";
+"alert.loginApproval.cancel" = "Позже";
+
+/* Окно настроек */
+"settings.title" = "Настройки BatLimit";
+"settings.section.general" = "Основные";
+"settings.loginItem" = "Запускать при входе";
+"settings.loginItem.needsApproval" = "macOS ждёт подтверждения: включи BatLimit в разделе «Элементы входа».";
+"settings.loginItem.open" = "Открыть «Элементы входа»";
+"settings.showPercentage" = "Показывать процент заряда в строке меню";
+"settings.showPercentage.note" = "Значок с уровнем заряда остаётся в любом случае. Системный индикатор батареи выключается отдельно — в «Настройки → Пункт управления».";
+"settings.section.magsafe" = "MagSafe";
+"settings.magsafeLED" = "Зелёный индикатор, пока зарядка удержана";
+"settings.magsafeLED.note" = "Пока BatLimit намеренно не заряжает батарею, разъём светится зелёным — как при полном заряде. Когда зарядка разрешена, цветом снова управляет система.";
+"settings.magsafe.unavailable" = "На этом Mac нет разъёма MagSafe со светодиодом.";
+"settings.section.service" = "Служба";
+"settings.service.state" = "Состояние";
+"settings.service.ready" = "установлена и отвечает";
+"settings.service.silent" = "установлена, но не отвечает";
+"settings.service.outdated" = "устарела — нужно обновить";
+"settings.service.missing" = "не установлена";
+"settings.service.install" = "Установить…";
+"settings.service.update" = "Обновить…";
+"settings.service.reinstall" = "Переустановить…";
+"settings.service.remove" = "Удалить…";
+"settings.service.note" = "Служба работает с правами администратора и единственная обращается к контроллеру питания. Пароль спрашивают только при установке и удалении.";
+"settings.version" = "Версия";
+"settings.version.value" = "%1$@ (сборка %2$@)";
+"settings.api" = "Рычаг управления";
+
+/* Панель мониторинга */
+"monitor.title" = "Батарея — BatLimit";
+"monitor.noService" = "служба не отвечает";
+"monitor.timeToFull" = "до полного заряда: %@";
+"monitor.timeToEmpty" = "работы осталось: %@";
+"monitor.duration.hoursMinutes" = "%1$d ч %2$d мин";
+"monitor.duration.minutes" = "%d мин";
+"monitor.tile.power" = "Мощность";
+"monitor.tile.power.help" = "Сколько ватт ноутбук потребляет прямо сейчас. Обновляется раз в секунду.";
+"monitor.tile.cycles" = "Циклов";
+"monitor.tile.health" = "Здоровье";
+"monitor.tile.capacity" = "Ёмкость";
+"monitor.tile.temperature" = "Температура";
+"monitor.value.watts" = "%.1f Вт";
+"monitor.value.percent" = "%.0f %%";
+"monitor.value.mah" = "%d мА·ч";
+"monitor.value.celsius" = "%.1f °C";
+"monitor.value.none" = "—";
+"monitor.chart.title" = "Заряд во времени";
+"monitor.chart.range.6h" = "6 ч";
+"monitor.chart.range.24h" = "24 ч";
+"monitor.chart.range.3d" = "3 дня";
+"monitor.chart.empty" = "Служба собирает данные раз в минуту — график появится через несколько минут работы.";
+"monitor.chart.axis.percent" = "%d %%";
+"monitor.history.partial" = "Истории пока за %@ — служба дописывает точку раз в минуту.";
+"monitor.history.full" = "Истории за %@.";
+"monitor.history.hours" = "%.0f ч";
+"monitor.history.minutes" = "%d мин";
+"monitor.processes.title" = "Больше всего расходуют батарею";
+"monitor.processes.leader" = "сейчас лидирует %@";
+"monitor.processes.loading" = "Собираю данные…";
+"monitor.processes.empty" = "Данные пока не получены — повторю через несколько секунд.";
+"monitor.processes.note" = "Ватты — измеренная энергия процессорных ядер: экран, видеоядро и радиомодули ни за кем не числятся, поэтому сумма по списку меньше общей мощности. У системных процессов счётчик закрыт, им остаётся прочерк. Серым — «энергетическое воздействие», та же относительная метрика, что в Мониторинге системы; по ней и отсортирован список.";
+"monitor.watts.full" = "%.2f Вт";
+"monitor.watts.milli" = "%.0f мВт";
+"monitor.watts.zero" = "0 мВт";

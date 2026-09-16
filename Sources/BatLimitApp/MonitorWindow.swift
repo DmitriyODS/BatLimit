@@ -155,11 +155,11 @@ struct MonitorView: View {
 
     private var header: some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Text("\(model.battery?.percentage ?? 0) %")
+            Text(L("menu.percent", model.battery?.percentage ?? 0))
                 .font(.system(size: 42, weight: .medium, design: .rounded))
                 .monospacedDigit()
             VStack(alignment: .leading, spacing: 2) {
-                Text(model.status?.phase ?? "служба не отвечает")
+                Text(model.status?.localizedPhase ?? L("monitor.noService"))
                     .font(.headline)
                 if let remaining = remainingText {
                     Text(remaining).font(.subheadline).foregroundStyle(.secondary)
@@ -171,23 +171,28 @@ struct MonitorView: View {
 
     private var remainingText: String? {
         guard let minutes = model.status?.minutesRemaining else { return nil }
-        let text = minutes >= 60 ? "\(minutes / 60) ч \(minutes % 60) мин" : "\(minutes) мин"
+        let text = minutes >= 60 ? L("monitor.duration.hoursMinutes", minutes / 60, minutes % 60)
+                                 : L("monitor.duration.minutes", minutes)
         return (model.battery?.isCharging ?? false)
-            ? "до полного заряда: \(text)"
-            : "работы осталось: \(text)"
+            ? L("monitor.timeToFull", text)
+            : L("monitor.timeToEmpty", text)
     }
 
     // MARK: - Плитки
 
+    private var none: String { L("monitor.value.none") }
+
     private var tiles: some View {
         HStack(spacing: 12) {
-            tile("Мощность", model.watts.map { String(format: "%.1f Вт", $0) } ?? "—")
-                .help("Сколько ватт ноутбук потребляет прямо сейчас. Обновляется раз в секунду.")
-            tile("Циклов", model.battery?.cycleCount.map(String.init) ?? "—")
-            tile("Здоровье", model.battery?.health.map { String(format: "%.0f %%", $0) } ?? "—")
-            tile("Ёмкость", model.battery?.maxCapacity.map { "\($0) мА·ч" } ?? "—")
-            tile("Температура",
-                 model.battery?.temperature.map { String(format: "%.1f °C", $0) } ?? "—")
+            tile(L("monitor.tile.power"), model.watts.map { L("monitor.value.watts", $0) } ?? none)
+                .help(L("monitor.tile.power.help"))
+            tile(L("monitor.tile.cycles"), model.battery?.cycleCount.map(String.init) ?? none)
+            tile(L("monitor.tile.health"),
+                 model.battery?.health.map { L("monitor.value.percent", $0) } ?? none)
+            tile(L("monitor.tile.capacity"),
+                 model.battery?.maxCapacity.map { L("monitor.value.mah", $0) } ?? none)
+            tile(L("monitor.tile.temperature"),
+                 model.battery?.temperature.map { L("monitor.value.celsius", $0) } ?? none)
         }
     }
 
@@ -206,12 +211,12 @@ struct MonitorView: View {
     private var chartSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Заряд во времени").font(.headline)
+                Text(L("monitor.chart.title")).font(.headline)
                 Spacer()
                 Picker("", selection: $model.hours) {
-                    Text("6 ч").tag(6.0)
-                    Text("24 ч").tag(24.0)
-                    Text("3 дня").tag(72.0)
+                    Text(L("monitor.chart.range.6h")).tag(6.0)
+                    Text(L("monitor.chart.range.24h")).tag(24.0)
+                    Text(L("monitor.chart.range.3d")).tag(72.0)
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 200)
@@ -219,7 +224,7 @@ struct MonitorView: View {
             }
 
             if model.history.count < 2 {
-                Text("Служба собирает данные раз в минуту — график появится через несколько минут работы.")
+                Text(L("monitor.chart.empty"))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 200)
@@ -234,11 +239,11 @@ struct MonitorView: View {
     private var historyNote: String {
         let hours = model.historySpan / 3600
         let collected = hours >= 1
-            ? String(format: "%.0f ч", hours)
-            : "\(Int(model.historySpan / 60)) мин"
+            ? L("monitor.history.hours", hours)
+            : L("monitor.history.minutes", Int(model.historySpan / 60))
         return model.historySpan < model.hours * 3600
-            ? "Истории пока за \(collected) — служба дописывает точку раз в минуту."
-            : "Истории за \(collected)."
+            ? L("monitor.history.partial", collected)
+            : L("monitor.history.full", collected)
     }
 
     /// Ось времени задаётся выбранным диапазоном, а не тем, сколько точек
@@ -289,7 +294,7 @@ struct MonitorView: View {
         .chartYAxis {
             AxisMarks(values: [0, 25, 50, 75, 100]) { value in
                 AxisGridLine()
-                AxisValueLabel { if let v = value.as(Int.self) { Text("\(v) %") } }
+                AxisValueLabel { if let v = value.as(Int.self) { Text(L("monitor.chart.axis.percent", v)) } }
             }
         }
         .chartXAxis {
@@ -311,9 +316,9 @@ struct MonitorView: View {
     private var processSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("Больше всего расходуют батарею").font(.headline)
+                Text(L("monitor.processes.title")).font(.headline)
                 if let leader = model.processes.first {
-                    Text("сейчас лидирует \(leader.name)")
+                    Text(L("monitor.processes.leader", leader.name))
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -325,7 +330,8 @@ struct MonitorView: View {
             }
 
             if model.processes.isEmpty {
-                Text(model.isLoadingProcesses ? "Собираю данные…" : "Данные пока не получены — повторю через несколько секунд.")
+                Text(model.isLoadingProcesses ? L("monitor.processes.loading")
+                                              : L("monitor.processes.empty"))
                     .font(.callout).foregroundStyle(.secondary)
             } else {
                 VStack(spacing: 6) {
@@ -335,12 +341,7 @@ struct MonitorView: View {
                 }
             }
 
-            Text("Ватты — измеренная энергия процессорных ядер: экран, видеоядро и "
-                 + "радиомодули ни за кем не числятся, поэтому сумма по списку "
-                 + "меньше общей мощности. У системных процессов счётчик закрыт, "
-                 + "им остаётся прочерк. Серым — «энергетическое воздействие», та же "
-                 + "относительная метрика, что в Мониторинге системы; по ней и "
-                 + "отсортирован список.")
+            Text(L("monitor.processes.note"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -375,10 +376,10 @@ struct MonitorView: View {
 
     /// Доли ватта читаются тяжело, поэтому мелочь показываем в милливаттах.
     static func wattsText(_ watts: Double?) -> String {
-        guard let watts else { return "—" }
-        if watts >= 1 { return String(format: "%.2f Вт", watts) }
-        if watts >= 0.0005 { return String(format: "%.0f мВт", watts * 1000) }
-        return "0 мВт"
+        guard let watts else { return L("monitor.value.none") }
+        if watts >= 1 { return L("monitor.watts.full", watts) }
+        if watts >= 0.0005 { return L("monitor.watts.milli", watts * 1000) }
+        return L("monitor.watts.zero")
     }
 }
 
@@ -398,7 +399,7 @@ final class MonitorWindowController: NSObject, NSWindowDelegate {
             contentRect: NSRect(x: 0, y: 0, width: 780, height: 620),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered, defer: false)
-        window.title = "Батарея — BatLimit"
+        window.title = L("monitor.title")
         window.contentView = NSHostingView(rootView: MonitorView(model: model))
         window.isReleasedWhenClosed = false
         window.center()
@@ -410,16 +411,13 @@ final class MonitorWindowController: NSObject, NSWindowDelegate {
     }
 
     private func activate(_ window: NSWindow) {
-        // Приложение живёт в строке меню (.accessory), у такого окна не было бы
-        // ни фокуса, ни строки меню — на время показа становимся обычным.
-        NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
+        AppWindows.opened(self)
         window.makeKeyAndOrderFront(nil)
     }
 
     func windowWillClose(_ notification: Notification) {
         model.stop()
         window = nil
-        NSApp.setActivationPolicy(.accessory)
+        AppWindows.closed(self)
     }
 }

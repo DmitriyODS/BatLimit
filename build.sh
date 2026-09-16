@@ -43,6 +43,14 @@ install -m 755 "$BIN/batlimit"    "$APP/Contents/Resources/batlimit"
 install -m 755 "$PROJECT_DIR/Resources/install-helper.sh"   "$APP/Contents/Resources/"
 install -m 755 "$PROJECT_DIR/Resources/uninstall-helper.sh" "$APP/Contents/Resources/"
 
+# Переводы. Язык выбирает macOS по списку предпочтений пользователя: каталог
+# <язык>.lproj внутри Resources — единственное, что для этого нужно.
+for LPROJ in "$PROJECT_DIR"/Resources/*.lproj; do
+    [[ -d "$LPROJ" ]] || continue
+    mkdir -p "$APP/Contents/Resources/$(basename "$LPROJ")"
+    install -m 644 "$LPROJ"/*.strings "$APP/Contents/Resources/$(basename "$LPROJ")/"
+done
+
 if [[ -f "$PROJECT_DIR/Resources/AppIcon.icns" ]]; then
     install -m 644 "$PROJECT_DIR/Resources/AppIcon.icns" "$APP/Contents/Resources/"
     ICON_ENTRY='    <key>CFBundleIconFile</key>             <string>AppIcon</string>'
@@ -58,6 +66,12 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleName</key>                 <string>BatLimit</string>
     <key>CFBundleDisplayName</key>          <string>BatLimit</string>
     <key>CFBundleIdentifier</key>           <string>com.dmitriy.batlimit.app</string>
+    <key>CFBundleDevelopmentRegion</key>    <string>en</string>
+    <key>CFBundleLocalizations</key>
+    <array>
+        <string>en</string>
+        <string>ru</string>
+    </array>
     <key>CFBundleExecutable</key>           <string>BatLimit</string>
     <key>CFBundlePackageType</key>          <string>APPL</string>
     <key>CFBundleShortVersionString</key>   <string>$VERSION</string>

@@ -1,0 +1,150 @@
+/* English interface strings for BatLimit. Keys live in Sources/BatLimitApp. */
+
+/* Power source — substituted into the state phrases */
+"source.ac" = "on AC power";
+"source.battery" = "on battery";
+
+/* What the service is doing with charging right now */
+"phase.noController" = "no way to control charging";
+"phase.releasing" = "%@, lifting the hold — applying…";
+"phase.inhibiting" = "%@, holding charging — applying…";
+"phase.systemLimitHolds" = "on AC power, charging held by the macOS limit";
+"phase.inhibitIgnored" = "on AC power, charging anyway despite the hold";
+"phase.oneShot" = "%1$@, charging to %2$d%% (one time)";
+"phase.notManaging" = "%@, not interfering";
+"phase.blocked" = "%@, charging held";
+"phase.chargingToHigh" = "%1$@, charging to %2$d%%";
+"phase.waitingForLow" = "%1$@, waiting to drain to %2$d%%";
+"phase.daemonStopped" = "service stopped";
+
+/* Top of the menu */
+"menu.title" = "%1$d%% · %2$@";
+"menu.percent" = "%d%%";
+"menu.error" = "error: %@";
+"menu.warning.systemLimit" = "⚠︎ Charging held by the macOS limit";
+
+/* Service */
+"menu.service.install" = "Install Service…";
+"menu.service.update" = "Update Service…";
+"menu.service.starting" = "Service is starting…";
+"menu.service.silent" = "Service is not responding";
+"menu.service.missing" = "Service is not installed";
+"menu.service.unavailable" = "Charge control unavailable";
+
+/* Charge control */
+"menu.charging" = "Charge Control";
+"menu.charging.hold" = "Don't Charge";
+"menu.charging.chargeTo" = "Charge to %d%%";
+"menu.charging.chargingTo" = "Charging to %d%%…";
+"menu.charging.auto" = "Auto: keep %1$d–%2$d%%";
+"menu.charging.off" = "Charge Normally";
+"menu.charging.low" = "Lower Threshold";
+"menu.charging.high" = "Upper Threshold";
+
+/* Energy control */
+"menu.energy" = "Energy Control";
+"menu.energy.settings" = "Battery Settings…";
+"energy.automatic" = "Automatic";
+"energy.low" = "Low Power";
+"energy.high" = "High Power";
+
+/* Rest of the menu */
+"menu.monitor" = "Monitoring Panel…";
+"menu.settings" = "Settings…";
+"menu.quit" = "Quit";
+
+/* Menu bar icon tooltips */
+"icon.tooltip" = "BatLimit · %1$d%% · %2$@";
+"icon.tooltip.starting" = "BatLimit: service is starting…";
+"icon.tooltip.silent" = "BatLimit: service is not responding";
+
+/* Dialogs */
+"alert.unsupported.title" = "BatLimit doesn't support this Mac";
+"alert.install.title" = "Install the BatLimit service?";
+"alert.install.body" = "Controlling charging needs a background service with administrator rights — it is the only part that talks to the power controller.\n\nYou'll be asked for the password once. The service can be removed in BatLimit settings.";
+"alert.install.ok" = "Install";
+"alert.install.cancel" = "Not Now";
+"alert.update.title" = "Update the BatLimit service?";
+"alert.update.body" = "The installed service comes from a different build of the app. Updating takes a couple of seconds and needs the administrator password.";
+"alert.update.ok" = "Update";
+"alert.update.cancel" = "Later";
+"alert.uninstall.title" = "Remove the BatLimit service?";
+"alert.uninstall.body" = "Charging returns to normal. The app itself stays — the service can be installed again from settings.";
+"alert.uninstall.ok" = "Remove";
+"alert.uninstall.cancel" = "Cancel";
+"alert.incomplete.title" = "The app is built incompletely";
+"alert.incomplete.install" = "The bundle contains no install-helper.sh or batlimitd.";
+"alert.incomplete.uninstall" = "The bundle contains no uninstall-helper.sh.";
+"alert.installFailed.title" = "Couldn't install the service";
+"alert.uninstallFailed.title" = "Couldn't remove the service";
+"alert.saveFailed.title" = "Couldn't save the setting";
+"alert.saveFailed.body" = "%1$@: %2$@\n\nTry reinstalling the service from settings.";
+"alert.loginFailed.title" = "Couldn't change the login item";
+"alert.loginApproval.title" = "Allow launching at login";
+"alert.loginApproval.body" = "macOS needs your confirmation: enable BatLimit under “Login Items” in System Settings.";
+"alert.loginApproval.ok" = "Open Settings";
+"alert.loginApproval.cancel" = "Later";
+
+/* Settings window */
+"settings.title" = "BatLimit Settings";
+"settings.section.general" = "General";
+"settings.loginItem" = "Launch at login";
+"settings.loginItem.needsApproval" = "macOS is waiting for confirmation: enable BatLimit under “Login Items”.";
+"settings.loginItem.open" = "Open Login Items";
+"settings.showPercentage" = "Show battery percentage in the menu bar";
+"settings.showPercentage.note" = "The charge level icon stays either way. The system battery indicator is turned off separately — in System Settings → Control Center.";
+"settings.section.magsafe" = "MagSafe";
+"settings.magsafeLED" = "Green light while charging is held";
+"settings.magsafeLED.note" = "While BatLimit deliberately keeps the battery from charging, the connector glows green — as it does at full charge. Once charging is allowed, the system takes the color back.";
+"settings.magsafe.unavailable" = "This Mac has no MagSafe connector with a light.";
+"settings.section.service" = "Service";
+"settings.service.state" = "State";
+"settings.service.ready" = "installed and responding";
+"settings.service.silent" = "installed, but not responding";
+"settings.service.outdated" = "outdated — needs an update";
+"settings.service.missing" = "not installed";
+"settings.service.install" = "Install…";
+"settings.service.update" = "Update…";
+"settings.service.reinstall" = "Reinstall…";
+"settings.service.remove" = "Remove…";
+"settings.service.note" = "The service runs with administrator rights and is the only part that talks to the power controller. The password is asked for only when installing and removing it.";
+"settings.version" = "Version";
+"settings.version.value" = "%1$@ (build %2$@)";
+"settings.api" = "Control lever";
+
+/* Monitoring panel */
+"monitor.title" = "Battery — BatLimit";
+"monitor.noService" = "service is not responding";
+"monitor.timeToFull" = "until full: %@";
+"monitor.timeToEmpty" = "time left: %@";
+"monitor.duration.hoursMinutes" = "%1$d h %2$d min";
+"monitor.duration.minutes" = "%d min";
+"monitor.tile.power" = "Power";
+"monitor.tile.power.help" = "How many watts the laptop draws right now. Updated once a second.";
+"monitor.tile.cycles" = "Cycles";
+"monitor.tile.health" = "Health";
+"monitor.tile.capacity" = "Capacity";
+"monitor.tile.temperature" = "Temperature";
+"monitor.value.watts" = "%.1f W";
+"monitor.value.percent" = "%.0f%%";
+"monitor.value.mah" = "%d mAh";
+"monitor.value.celsius" = "%.1f °C";
+"monitor.value.none" = "—";
+"monitor.chart.title" = "Charge over time";
+"monitor.chart.range.6h" = "6 h";
+"monitor.chart.range.24h" = "24 h";
+"monitor.chart.range.3d" = "3 days";
+"monitor.chart.empty" = "The service collects a data point every minute — the chart appears after a few minutes of running.";
+"monitor.chart.axis.percent" = "%d%%";
+"monitor.history.partial" = "History covers %@ so far — the service adds a point every minute.";
+"monitor.history.full" = "History covers %@.";
+"monitor.history.hours" = "%.0f h";
+"monitor.history.minutes" = "%d min";
+"monitor.processes.title" = "Biggest battery drains";
+"monitor.processes.leader" = "%@ leads right now";
+"monitor.processes.loading" = "Collecting data…";
+"monitor.processes.empty" = "No data yet — trying again in a few seconds.";
+"monitor.processes.note" = "Watts are measured CPU core energy: the display, the GPU and the radios are charged to no one, so the list adds up to less than the total power. System processes keep their counter closed and get a dash. In gray — “energy impact”, the same relative metric Activity Monitor shows; the list is sorted by it.";
+"monitor.watts.full" = "%.2f W";
+"monitor.watts.milli" = "%.0f mW";
+"monitor.watts.zero" = "0 mW";

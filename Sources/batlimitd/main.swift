@@ -70,6 +70,9 @@ final class Daemon {
     /// адаптер отключался бы каждые 20 секунд.
     private var mismatchSince: Date?
     private var nudgedThisMismatch = false
+    /// Идёт ли калибровочная зарядка macOS — чтобы записать в журнал только
+    /// вход в это состояние и выход из него, а не каждый тик.
+    private var lastCalibrating = false
     /// Решение, при котором писали лимит в последний раз, — для журнала.
     private var lastLimitAllowed: Bool?
     private var lastLimitCheck = Date.distantPast
@@ -123,7 +126,9 @@ final class Daemon {
         let state = controller.api == .macOSLimit
             ? applySystemLimit(allowed: allowed, cfg: cfg, battery: bat)
             : apply(allowed: allowed, battery: bat)
-        applyLED(cfg: cfg, requested: state.requested, battery: bat)
+        // Во время калибровки зелёный «удерживаю» неуместен — батарея реально
+        // заряжается, пусть светодиод показывает это по-системному.
+        applyLED(cfg: cfg, requested: state.requested && !state.calibrating, battery: bat)
         recordHistory(bat)
         writeStatus(cfg: cfg, bat: bat, allowed: allowed, state: state)
         rotateLogIfNeeded()
@@ -240,9 +245,10 @@ final class Daemon {
 
     /// Что мы попросили у контроллера и что он на самом деле делает.
     struct ChargeState {
-        let requested: Bool   // нужна ли блокировка по нашему решению
-        let effective: Bool   // держим ли зарядку на самом деле
-        let settling: Bool    // команда отправлена, но ещё не применена
+        let requested: Bool     // нужна ли блокировка по нашему решению
+        let effective: Bool     // держим ли зарядку на самом деле
+        let settling: Bool      // команда отправлена, но ещё не применена
+        var calibrating = false // macOS ведёт калибровочную зарядку до 100 %
     }
 
     /// Приводит SMC к нужному состоянию и возвращает, что происходит на самом деле.
@@ -315,6 +321,21 @@ final class Daemon {
             return ChargeState(requested: false, effective: false, settling: false)
         }
 
+        // macOS раз в несколько дней сама заряжает батарею до 100 % для
+        // калибровки датчика заряда и на это время отключает лимит. Пока это
+        // идёт, лимит ничего не держит: переписывать его бессмысленно (мы лишь
+        // затирали бы правку пользователя в Настройках), а переподключать
+        // адаптер — тем более (powerd тут же продолжит зарядку, а мы лишь мигали
+        // бы адаптером по кругу). Отступаем: заряд ведёт система, вернёмся к
+        // удержанию, когда калибровка закончится.
+        let calibrating = SystemCalibration.chargingToFull
+        if calibrating != lastCalibrating {
+            log(calibrating
+                ? "macOS начала калибровочную зарядку до 100 % — отступаю, лимит сейчас держит система"
+                : "Калибровочная зарядка macOS завершена — возвращаюсь к удержанию заряда")
+            lastCalibrating = calibrating
+        }
+
         let shouldInhibit = !allowed
         let target: Int
         if allowed {
@@ -326,19 +347,21 @@ final class Daemon {
             target = max(ceiling, SystemChargeLimit.minimum)
         }
 
-        do {
-            try enforceSystemLimit(limit, target: target, allowed: allowed)
-            lastError = nil
-        } catch {
-            let message = "\(error)"
-            if lastError != message { log("Ошибка лимита macOS: \(message)") }
-            lastError = message
+        if !calibrating {
+            do {
+                try enforceSystemLimit(limit, target: target, allowed: allowed)
+                lastError = nil
+            } catch {
+                let message = "\(error)"
+                if lastError != message { log("Ошибка лимита macOS: \(message)") }
+                lastError = message
+            }
         }
 
         // Факт — по `NotChargingReason`: бит 24 означает, что заряд держит
         // лимит macOS, то есть теперь мы. На батарее сверять нечего.
         let mismatch: Bool
-        if !bat.isPluggedIn {
+        if !bat.isPluggedIn || calibrating {
             mismatch = false
         } else if shouldInhibit {
             mismatch = bat.isCharging
@@ -367,8 +390,11 @@ final class Daemon {
         let sinceWrite = now.timeIntervalSince(limitWrittenAt)
 
         return ChargeState(requested: shouldInhibit,
-                           effective: shouldInhibit && !mismatch,
-                           settling: mismatch && sinceWrite < Daemon.settleWindow)
+                           // Во время калибровки заряд ведёт система, а не мы:
+                           // не выдаём удержание за действительное.
+                           effective: shouldInhibit && !mismatch && !calibrating,
+                           settling: mismatch && sinceWrite < Daemon.settleWindow,
+                           calibrating: calibrating && shouldInhibit)
     }
 
     /// Пишет лимит, если он отличается от нужного, и раз в несколько секунд
@@ -536,6 +562,11 @@ final class Daemon {
                                state: ChargeState) -> PhaseKind {
         if controller.api == .unknown { return .noController }
 
+        // macOS ведёт свою калибровочную зарядку до 100 % — лимит она сейчас
+        // не применяет, и мы не мешаем. Честно называем, кто ведёт заряд.
+        if state.calibrating {
+            return .systemCalibrating
+        }
         // Контроллер применяет команду не сразу — не делаем вид, что уже готово.
         if state.settling {
             return allowed ? .releasing : .inhibiting

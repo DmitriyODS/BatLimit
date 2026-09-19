@@ -11,6 +11,7 @@ public enum PhaseKind: String, Codable {
     case releasing         // снимаем блокировку, контроллер ещё не применил
     case inhibiting        // выставляем блокировку, контроллер ещё не применил
     case systemLimitHolds  // зарядку держит чужой лимит macOS
+    case systemCalibrating // macOS сама заряжает до 100 % для калибровки
     case inhibitIgnored    // запрет выставлен, а зарядка всё равно идёт
     case oneShot           // разовая зарядка до верхнего порога
     case notManaging       // режим «выключено»
@@ -27,6 +28,7 @@ public enum PhaseKind: String, Codable {
         case .releasing:        return "\(source), снимаю блокировку — применяется…"
         case .inhibiting:       return "\(source), блокирую зарядку — применяется…"
         case .systemLimitHolds: return "от сети, зарядку держит системный лимит macOS"
+        case .systemCalibrating: return "от сети, macOS калибрует батарею — заряжает до 100 %"
         case .inhibitIgnored:   return "от сети, зарядка идёт, хотя запрет выставлен"
         case .oneShot:          return "\(source), заряжаю до \(high)% (разово)"
         case .notManaging:      return "\(source), не вмешиваюсь"

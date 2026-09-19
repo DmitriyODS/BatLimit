@@ -25,6 +25,7 @@ extension PhaseKind {
         case .releasing:        return L("phase.releasing", source)
         case .inhibiting:       return L("phase.inhibiting", source)
         case .systemLimitHolds: return L("phase.systemLimitHolds")
+        case .systemCalibrating: return L("phase.systemCalibrating")
         case .inhibitIgnored:   return L("phase.inhibitIgnored")
         case .oneShot:          return L("phase.oneShot", source, high)
         case .notManaging:      return L("phase.notManaging", source)

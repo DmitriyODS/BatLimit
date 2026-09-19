@@ -5,6 +5,7 @@ import Foundation
 /// пользователя, а не в config.json, который читает root.
 enum AppPreferences {
     private static let showPercentageKey = "showPercentage"
+    private static let showBadgeKey = "showBadge"
 
     /// Показывать ли процент заряда текстом рядом со значком.
     static var showPercentage: Bool {
@@ -15,6 +16,18 @@ enum AppPreferences {
         }
         set {
             UserDefaults.standard.set(newValue, forKey: showPercentageKey)
+            NotificationCenter.default.post(name: .appPreferencesChanged, object: nil)
+        }
+    }
+
+    /// Показывать ли рядом со значком метку состояния зарядки (пауза, молния,
+    /// вилка…). Метка живёт справа от батареи; кому она мешает — выключает.
+    static var showBadge: Bool {
+        get {
+            UserDefaults.standard.object(forKey: showBadgeKey) as? Bool ?? true
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: showBadgeKey)
             NotificationCenter.default.post(name: .appPreferencesChanged, object: nil)
         }
     }

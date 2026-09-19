@@ -9,6 +9,7 @@
 "phase.releasing" = "%@, lifting the hold — applying…";
 "phase.inhibiting" = "%@, holding charging — applying…";
 "phase.systemLimitHolds" = "on AC power, charging held by the macOS limit";
+"phase.systemCalibrating" = "on AC power, macOS is calibrating the battery — charging to 100%";
 "phase.inhibitIgnored" = "on AC power, charging anyway despite the hold";
 "phase.oneShot" = "%1$@, charging to %2$d%% (one time)";
 "phase.notManaging" = "%@, not interfering";
@@ -95,6 +96,8 @@
 "settings.loginItem.open" = "Open Login Items";
 "settings.showPercentage" = "Show battery percentage in the menu bar";
 "settings.showPercentage.note" = "The charge level icon stays either way. The system battery indicator is turned off separately — in System Settings → Control Center.";
+"settings.showBadge" = "Show the charging state badge";
+"settings.showBadge.note" = "A mark to the right of the battery: pause, bolt, plug. Shows what charging is doing.";
 "settings.section.magsafe" = "MagSafe";
 "settings.magsafeLED" = "Green light while charging is held";
 "settings.magsafeLED.note" = "While BatLimit deliberately keeps the battery from charging, the connector glows green — as it does at full charge. Once charging is allowed, the system takes the color back.";

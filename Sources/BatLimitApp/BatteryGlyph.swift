@@ -53,12 +53,17 @@ enum BatteryGlyph {
 
     // Размеры подобраны под системный индикатор батареи: рядом с ним наш
     // значок не должен выглядеть ни крупнее, ни мельче.
-    private static let size = NSSize(width: 26, height: 14)
+    private static let height: CGFloat = 14
+    /// Ширина самой батареи с «рожком» — метка рисуется правее этой границы.
+    private static let batteryWidth: CGFloat = 26
     private static let body = NSRect(x: 0.5, y: 1.25, width: 22, height: 11.5)
     private static let bodyRadius: CGFloat = 3.4
     private static let outlineAlpha: CGFloat = 0.45
     /// Отступ заливки от внутреннего края корпуса.
     private static let fillInset: CGFloat = 2
+    /// Зазор между батареей и меткой состояния и ширина области под метку.
+    private static let badgeGap: CGFloat = 2.5
+    private static let badgeBox: CGFloat = 11
 
     static func image(percentage: Int, badge: Badge, tint: Tint = .normal) -> NSImage {
         // Цвет из шаблона не переживёт: шаблонный значок строка меню
@@ -68,11 +73,16 @@ enum BatteryGlyph {
         let ink = template ? NSColor.black : NSColor.labelColor
         let fill = tint.color ?? ink
 
-        let image = NSImage(size: size, flipped: false) { _ in
+        // Метка состояния теперь стоит справа от батареи, а не внутри корпуса:
+        // в тесной батарейке она читалась плохо. Есть метка — значок шире.
+        let hasBadge = badge.symbolName != nil
+        let width = batteryWidth + (hasBadge ? badgeGap + badgeBox : 0)
+
+        let image = NSImage(size: NSSize(width: width, height: height), flipped: false) { _ in
             drawOutline(ink: ink)
-            let fillMaxX = drawFill(percentage: percentage, color: fill)
+            drawFill(percentage: percentage, color: fill)
             if let name = badge.symbolName {
-                drawBadge(name, fillMaxX: fillMaxX, ink: ink)
+                drawBadge(name, ink: ink)
             }
             return true
         }
@@ -92,51 +102,38 @@ enum BatteryGlyph {
         ink.withAlphaComponent(outlineAlpha).setFill()
         let nub = NSBezierPath()
         let x = body.maxX + 0.7
-        nub.move(to: NSPoint(x: x, y: size.height / 2 - 2.1))
-        nub.curve(to: NSPoint(x: x, y: size.height / 2 + 2.1),
-                  controlPoint1: NSPoint(x: x + 2.6, y: size.height / 2 - 1.6),
-                  controlPoint2: NSPoint(x: x + 2.6, y: size.height / 2 + 1.6))
+        nub.move(to: NSPoint(x: x, y: height / 2 - 2.1))
+        nub.curve(to: NSPoint(x: x, y: height / 2 + 2.1),
+                  controlPoint1: NSPoint(x: x + 2.6, y: height / 2 - 1.6),
+                  controlPoint2: NSPoint(x: x + 2.6, y: height / 2 + 1.6))
         nub.close()
         nub.fill()
     }
 
-    /// Заливка по уровню заряда. Возвращает её правый край: по нему метка
-    /// состояния решает, где её выбивать из заливки, а где рисовать поверх.
-    private static func drawFill(percentage: Int, color: NSColor) -> CGFloat {
+    /// Заливка по уровню заряда.
+    private static func drawFill(percentage: Int, color: NSColor) {
         let track = body.insetBy(dx: fillInset, dy: fillInset)
         let level = CGFloat(min(max(percentage, 0), 100)) / 100
-        guard level > 0 else { return track.minX }
+        guard level > 0 else { return }
         // Даже на одном проценте оставляем видимую полоску: пустой корпус
         // и корпус с остатком заряда — разные состояния.
         let width = max(track.width * level, 2)
         let rect = NSRect(x: track.minX, y: track.minY, width: width, height: track.height)
         color.setFill()
         NSBezierPath(roundedRect: rect, xRadius: 1.6, yRadius: 1.6).fill()
-        return rect.maxX
     }
 
-    /// Метку рисуем в два приёма: внутри заливки выбиваем её «дыркой»,
-    /// снаружи — обычной краской. Иначе на низком заряде метка исчезала бы
-    /// вместе с заливкой, а на высоком сливалась бы с ней.
-    private static func drawBadge(_ symbolName: String, fillMaxX: CGFloat, ink: NSColor) {
-        guard let symbol = tinted(symbolName, pointSize: 9, ink: ink) else { return }
-
-        // Метка живёт внутри корпуса: ограничиваем и по высоте, и по ширине —
-        // иначе широкие символы (вилка) упираются в стенки.
-        let scale = min(7 / symbol.size.height, 9.5 / symbol.size.width, 1)
+    /// Метка состояния — справа от батареи. Внутри корпуса она читалась плохо
+    /// (на низком заряде исчезала, на высоком сливалась с заливкой); здесь для
+    /// неё есть место, и рисуется она обычной краской, без хитростей.
+    private static func drawBadge(_ symbolName: String, ink: NSColor) {
+        guard let symbol = tinted(symbolName, pointSize: 11, ink: ink) else { return }
+        let scale = min(badgeBox / symbol.size.width, 12 / symbol.size.height, 1)
         let drawSize = NSSize(width: symbol.size.width * scale, height: symbol.size.height * scale)
-        let rect = NSRect(x: body.midX - drawSize.width / 2,
-                          y: body.midY - drawSize.height / 2,
+        let rect = NSRect(x: batteryWidth + badgeGap + (badgeBox - drawSize.width) / 2,
+                          y: (height - drawSize.height) / 2,
                           width: drawSize.width, height: drawSize.height)
-
-        symbol.draw(in: rect, from: .zero, operation: .destinationOut, fraction: 1)
-
-        guard fillMaxX < rect.maxX else { return }
-        NSGraphicsContext.saveGraphicsState()
-        NSBezierPath(rect: NSRect(x: fillMaxX, y: 0,
-                                  width: body.maxX - fillMaxX + 4, height: size.height)).setClip()
         symbol.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1)
-        NSGraphicsContext.restoreGraphicsState()
     }
 
     /// Символ нужного цвета. Шаблонный значок строка меню красит сама, но в

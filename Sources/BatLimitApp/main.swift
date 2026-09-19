@@ -564,10 +564,15 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate, Set
             badge = starting ? .none : .warning
             button.toolTip = starting ? L("icon.tooltip.starting") : L("icon.tooltip.silent")
         } else if let st = status {
+            // Метку состояния можно выключить в настройках — кому она не нужна.
+            // Тревожный «!» (служба молчит) остаётся выше, отдельной веткой:
+            // это не рядовое состояние, а сигнал неполадки.
+            if !AppPreferences.showBadge {
+                badge = .none
             // Команда отправлена, но контроллер заряда её ещё не применил —
             // он перечитывает ключ раз в ~45–50 с. Показываем ожидание, а не
             // желаемый результат: иначе значок врёт целую минуту.
-            if st.settling == true {
+            } else if st.settling == true {
                 badge = .settling
             } else if st.inhibited {
                 badge = .hold

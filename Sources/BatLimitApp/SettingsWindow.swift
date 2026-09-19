@@ -47,6 +47,15 @@ final class SettingsModel: ObservableObject {
         }
     }
 
+    var showBadge: Bool {
+        get { AppPreferences.showBadge }
+        set {
+            guard newValue != AppPreferences.showBadge else { return }
+            objectWillChange.send()
+            AppPreferences.showBadge = newValue
+        }
+    }
+
     func start() {
         refresh()
         // Режим .common: иначе состояние службы замирало бы на время
@@ -125,6 +134,12 @@ struct SettingsView: View {
                 get: { model.showPercentage },
                 set: { model.showPercentage = $0 }))
             Text(L("settings.showPercentage.note"))
+                .font(.callout).foregroundStyle(.secondary)
+
+            Toggle(L("settings.showBadge"), isOn: Binding(
+                get: { model.showBadge },
+                set: { model.showBadge = $0 }))
+            Text(L("settings.showBadge.note"))
                 .font(.callout).foregroundStyle(.secondary)
         }
     }

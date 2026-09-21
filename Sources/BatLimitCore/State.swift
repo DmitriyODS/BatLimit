@@ -29,6 +29,14 @@ public enum Mode: String, Codable, CaseIterable {
     }
 }
 
+/// Разовое поручение про калибровку macOS: отменить начатую или начать её
+/// прямо сейчас. Как и разовая зарядка, живёт в конфиге до выполнения —
+/// служба выполняет и гасит поле.
+public enum CalibrationRequest: String, Codable {
+    case stop   // отменить калибровку, которая идёт
+    case start  // попросить macOS откалибровать батарею сейчас
+}
+
 /// Что хочет пользователь. Пишут CLI и меню, читает демон.
 public struct Config: Codable, Equatable {
     public var mode: Mode
@@ -36,6 +44,21 @@ public struct Config: Codable, Equatable {
     public var high: Int         // верхний порог: до скольки заряжать
     public var chargeNow: Bool   // разовая зарядка до `high`, потом флаг сбрасывается
     public var magsafeLED: Bool  // подсвечивать разъём MagSafe зелёным, когда зарядка удержана
+    /// Возвращать заряд к верхнему порогу, если он оказался выше.
+    ///
+    /// macOS умеет это сама: лимит ниже текущего заряда она понимает как
+    /// просьбу свести заряд к нему и питает ноутбук от батареи прямо от
+    /// адаптера (флаг `drain` в её политике, состояние `DischargingToMCL`
+    /// в PowerUI). По умолчанию выключено: обычно достаточно просто не
+    /// подзаряжать и дать заряду сойти вниз самому.
+    public var dischargeToHigh: Bool
+    /// Не давать macOS проводить калибровочную зарядку до 100 %.
+    /// См. `CalibrationControl`. По умолчанию включено: иначе лимит,
+    /// ради которого программу и ставят, раз в несколько дней переставал
+    /// что-либо значить. Кому калибровка нужна — выключает её в настройках.
+    public var preventCalibration: Bool
+    /// Разовая просьба про калибровку — см. `CalibrationRequest`.
+    public var calibrationRequest: CalibrationRequest?
     /// Просьба сменить режим энергии macOS — для батареи, для сети или для
     /// обоих. Это поручение, а не настройка: менять режим может кто угодно —
     /// Настройки, Пункт управления, pmset, — и удерживать его своим значением
@@ -50,19 +73,25 @@ public struct Config: Codable, Equatable {
                                         chargeNow: false, magsafeLED: true)
 
     public init(mode: Mode, low: Int, high: Int, chargeNow: Bool, magsafeLED: Bool = true,
+                dischargeToHigh: Bool = false, preventCalibration: Bool = true,
+                calibrationRequest: CalibrationRequest? = nil,
                 energyModeRequests: EnergyModePair? = nil) {
         self.mode = mode
         self.low = low
         self.high = high
         self.chargeNow = chargeNow
         self.magsafeLED = magsafeLED
+        self.dischargeToHigh = dischargeToHigh
+        self.preventCalibration = preventCalibration
+        self.calibrationRequest = calibrationRequest
         self.energyModeRequests = energyModeRequests
         clamp()
     }
 
     /// Старые конфиги поля не содержат — считаем подсветку включённой.
     enum CodingKeys: String, CodingKey {
-        case mode, low, high, chargeNow, magsafeLED, energyModeRequests
+        case mode, low, high, chargeNow, magsafeLED, dischargeToHigh, preventCalibration
+        case calibrationRequest, energyModeRequests
     }
 
     public init(from decoder: Decoder) throws {
@@ -72,6 +101,11 @@ public struct Config: Codable, Equatable {
         high = try c.decodeIfPresent(Int.self, forKey: .high) ?? 80
         chargeNow = try c.decodeIfPresent(Bool.self, forKey: .chargeNow) ?? false
         magsafeLED = try c.decodeIfPresent(Bool.self, forKey: .magsafeLED) ?? true
+        dischargeToHigh = try c.decodeIfPresent(Bool.self, forKey: .dischargeToHigh) ?? false
+        preventCalibration = try c.decodeIfPresent(Bool.self, forKey: .preventCalibration) ?? true
+        // Непонятную просьбу пропускаем, а не роняем весь конфиг: она
+        // одноразовая, а режим зарядки из-за неё сбросился бы.
+        calibrationRequest = try? c.decodeIfPresent(CalibrationRequest.self, forKey: .calibrationRequest)
         // Непонятную просьбу пропускаем, а не роняем весь конфиг: она
         // одноразовая, а режим зарядки из-за неё сбросился бы.
         energyModeRequests = try? c.decodeIfPresent(EnergyModePair.self, forKey: .energyModeRequests)
@@ -139,6 +173,14 @@ public struct Status: Codable {
     /// Есть ли на этой машине разъём MagSafe со светодиодом: в SMC это видно
     /// только оттуда, где уже открыто соединение.
     public var magsafeLEDAvailable: Bool?
+    /// Умеет ли эта машина возвращать заряд к порогу: разряжает сама macOS
+    /// по своему лимиту, поэтому нужен рычаг `.macOSLimit`.
+    public var dischargeAvailable: Bool?
+    /// macOS прямо сейчас ведёт калибровочную зарядку.
+    public var calibrating: Bool?
+    /// Умеет ли эта версия macOS то, чем BatLimit отменяет калибровку
+    /// (см. `CalibrationControl.isAvailable`).
+    public var calibrationControl: Bool?
     public var error: String?
     public var updatedAt: Date
 
@@ -146,7 +188,8 @@ public struct Status: Codable {
                 settling: Bool, systemLimitActive: Bool, mode: Mode, low: Int, high: Int,
                 chargeNow: Bool, phase: String, phaseKind: PhaseKind? = nil, api: String,
                 minutesRemaining: Int?, cycleCount: Int?, energyModes: EnergyModePair? = nil,
-                magsafeLEDAvailable: Bool? = nil,
+                magsafeLEDAvailable: Bool? = nil, dischargeAvailable: Bool? = nil,
+                calibrating: Bool? = nil, calibrationControl: Bool? = nil,
                 error: String?, updatedAt: Date) {
         self.percentage = percentage
         self.isCharging = isCharging
@@ -165,6 +208,9 @@ public struct Status: Codable {
         self.cycleCount = cycleCount
         self.energyModes = energyModes
         self.magsafeLEDAvailable = magsafeLEDAvailable
+        self.dischargeAvailable = dischargeAvailable
+        self.calibrating = calibrating
+        self.calibrationControl = calibrationControl
         self.error = error
         self.updatedAt = updatedAt
     }

@@ -27,6 +27,8 @@ func usage() {
       auto [низ] [верх]      авто-режим: держать заряд в коридоре
       off                    отключить управление, заряжать как обычно
       limits <низ> <верх>    изменить пороги, не меняя режим
+      discharge on|off       возвращать ли заряд к верхнему порогу
+      calibration <что>      allow | block | now | stop — калибровка macOS
       check                  подходит ли этот Mac
       smc <ключ>             прочитать SMC-ключ (диагностика)
 
@@ -34,6 +36,8 @@ func usage() {
       batlimit hold          не заряжать, пока не скажу
       batlimit auto 30 80    разряжать до 30%, заряжать до 80%, по кругу
       batlimit charge        разово дозарядить до верхнего порога
+      batlimit calibration block   не давать macOS заряжать до 100 %
+      batlimit calibration now     откалибровать батарею прямо сейчас
     """)
 }
 
@@ -176,6 +180,22 @@ case "limits":
         $0.low = parsePercent(args[1], "нижний порог")
         $0.high = parsePercent(args[2], "верхний порог")
     }, waitForChange: false)
+
+case "discharge":
+    guard args.count == 2, let on = ["on": true, "off": false][args[1]] else {
+        fail("нужно on или off: batlimit discharge on")
+    }
+    update({ $0.dischargeToHigh = on }, waitForChange: false)
+
+case "calibration":
+    guard args.count == 2 else { fail("нужно allow, block, now или stop") }
+    switch args[1] {
+    case "allow": update({ $0.preventCalibration = false }, waitForChange: false)
+    case "block": update({ $0.preventCalibration = true }, waitForChange: false)
+    case "now":   update({ $0.calibrationRequest = .start }, waitForChange: false)
+    case "stop":  update({ $0.calibrationRequest = .stop }, waitForChange: false)
+    default: fail("нужно allow, block, now или stop")
+    }
 
 case "check":
     let check = SystemCheck.run()

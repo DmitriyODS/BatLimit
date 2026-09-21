@@ -10,6 +10,7 @@
 "phase.inhibiting" = "%@, holding charging — applying…";
 "phase.systemLimitHolds" = "on AC power, charging held by the macOS limit";
 "phase.systemCalibrating" = "on AC power, macOS is calibrating the battery — charging to 100%";
+"phase.dischargingToHigh" = "on AC power, bringing the charge back to %d%% — running off the battery";
 "phase.inhibitIgnored" = "on AC power, charging anyway despite the hold";
 "phase.oneShot" = "%1$@, charging to %2$d%% (one time)";
 "phase.notManaging" = "%@, not interfering";
@@ -98,6 +99,17 @@
 "settings.showPercentage.note" = "The charge level icon stays either way. The system battery indicator is turned off separately — in System Settings → Control Center.";
 "settings.showBadge" = "Show the charging state badge";
 "settings.showBadge.note" = "A mark to the right of the battery: pause, bolt, plug. Shows what charging is doing.";
+"settings.section.charging" = "Charge";
+"settings.preventCalibration" = "Keep macOS from calibrating the battery";
+"settings.preventCalibration.note" = "Every few days macOS charges the battery to 100% to refine the charge gauge, lifting every charge limit while it does. With this on, BatLimit moves the dates that decision is based on and restarts the powerd service: the calibration is called off and the charge never goes above your limit. The cost is that the gauge stops being refined, so the percentage and time estimates drift. Every couple of months it is worth turning this off, or charging to 100% once. Turn it off if you want the calibration, and BatLimit will simply step aside while it runs.";
+"settings.calibration.unavailable" = "This version of macOS runs the calibration differently — BatLimit leaves it alone and simply steps aside while it runs.";
+"settings.calibration.stop" = "Stop Now";
+"settings.calibration.start" = "Calibrate Now";
+"settings.calibration.actions.note" = "\"Calibrate Now\" asks macOS to charge the battery to 100%: doing this every couple of months keeps the charge gauge honest. While a calibration you asked for is running, BatLimit stays out of its way even with the setting above turned on.";
+"settings.dischargeToHigh" = "Bring the charge back to the upper limit";
+"settings.dischargeToHigh.note" = "If the charge does end up above the limit, BatLimit asks macOS to bring it back down: while it does, the Mac runs off the battery even though the adapter is plugged in. Without this the charge simply is not topped up and drifts down on its own as you work.";
+"settings.dischargeToHigh.unavailable" = "Only the macOS charge limit can bring the charge back down. On this Mac charging is driven by SMC keys.";
+
 "settings.section.magsafe" = "MagSafe";
 "settings.magsafeLED" = "Green light while charging is held";
 "settings.magsafeLED.note" = "While BatLimit deliberately keeps the battery from charging, the connector glows green — as it does at full charge. Once charging is allowed, the system takes the color back.";

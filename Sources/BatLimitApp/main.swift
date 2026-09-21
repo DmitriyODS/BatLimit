@@ -719,6 +719,22 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate, Set
         mutate { $0.magsafeLED = enabled }
     }
 
+    func settingsSetDischargeToHigh(_ enabled: Bool) {
+        mutate { $0.dischargeToHigh = enabled }
+    }
+
+    func settingsSetPreventCalibration(_ enabled: Bool) {
+        mutate { $0.preventCalibration = enabled }
+    }
+
+    func settingsStopCalibration() {
+        mutate { $0.calibrationRequest = .stop }
+    }
+
+    func settingsStartCalibration() {
+        mutate { $0.calibrationRequest = .start }
+    }
+
     var automaticallyChecksForUpdates: Bool {
         get { updates.automaticallyChecks }
         set { updates.automaticallyChecks = newValue }

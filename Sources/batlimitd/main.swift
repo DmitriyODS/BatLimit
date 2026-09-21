@@ -73,6 +73,31 @@ final class Daemon {
     /// Идёт ли калибровочная зарядка macOS — чтобы записать в журнал только
     /// вход в это состояние и выход из него, а не каждый тик.
     private var lastCalibrating = false
+    /// То же для возврата заряда к порогу.
+    private var lastDraining = false
+    /// Когда в последний раз отодвигали повод для калибровки и сколько раз
+    /// подряд. Перезапуск powerd — не та вещь, которую стоит повторять часто:
+    /// если после трёх попыток он всё равно просит зарядку до 100 %, значит
+    /// причина не в датах, и дальше мы только мешали бы системе.
+    private var lastPostpone = Date.distantPast
+    private var postponeAttempts = 0
+    /// До этого момента адаптер не дёргаем: powerd только что перезапущен
+    /// и лимит ему нужно отдать заново, на это уходит до минуты.
+    private var quietUntil = Date.distantPast
+    /// Умеет ли эта версия macOS то, чем мы отменяем калибровку. Спрашиваем
+    /// редко: ответ меняется разве что с обновлением системы.
+    private var calibrationControlAvailable = CalibrationControl.isAvailable
+    private var lastCalibrationCheck = Date()
+    private static let calibrationCheckInterval: TimeInterval = 3600
+    /// Калибровку позвал сам пользователь — значит отменять её не надо,
+    /// даже если в настройках стоит «не давать калибровать».
+    private var manualCalibration = false
+    private var manualCalibrationSince: Date?
+    /// Сколько ждём начала позванной калибровки: не началась — значит система
+    /// её не захотела, и дальше настройка снова в силе.
+    private static let manualCalibrationWait: TimeInterval = 600
+    private static let postponeInterval: TimeInterval = 900
+    private static let postponeAttemptLimit = 3
     /// Решение, при котором писали лимит в последний раз, — для журнала.
     private var lastLimitAllowed: Bool?
     private var lastLimitCheck = Date.distantPast
@@ -113,6 +138,7 @@ final class Daemon {
         }
 
         updateOneShot(cfg: &cfg, battery: bat)
+        applyCalibrationRequest(cfg: &cfg)
         applyEnergyModeRequest(cfg: &cfg)
         refreshEnergyMode()
 
@@ -186,6 +212,59 @@ final class Daemon {
         restoreConfigOwnership()
     }
 
+    /// Выполняет разовую просьбу про калибровку и гасит её.
+    ///
+    /// Просьба начать калибровку сильнее настройки «не давать калибровать»:
+    /// раз пользователь сам её позвал, мешать ей мы не будем, пока она не
+    /// закончится.
+    private func applyCalibrationRequest(cfg: inout Config) {
+        guard let request = cfg.calibrationRequest else { return }
+        cfg.calibrationRequest = nil
+        try? cfg.save()
+        restoreConfigOwnership()
+
+        do {
+            switch request {
+            case .stop:
+                manualCalibration = false
+                guard SystemCalibration.chargingToFull else {
+                    log("Остановить калибровку не о чем: система её сейчас не ведёт")
+                    return
+                }
+                try CalibrationControl.postpone()
+                log("Калибровка остановлена по просьбе — отодвинул повод и перезапустил powerd")
+                // Флаг гаснет через несколько секунд; до тех пор автоматика
+                // не должна перезапускать powerd второй раз подряд.
+                lastPostpone = Date()
+                calibrationRestarted()
+            case .start:
+                try CalibrationControl.requestNow()
+                manualCalibration = true
+                manualCalibrationSince = Date()
+                log("Просьба откалибровать батарею: пометил данные датчика устаревшими "
+                    + "и перезапустил powerd — зарядка пойдёт до 100 %")
+                calibrationRestarted()
+            }
+            lastError = nil
+        } catch {
+            let message = "\(error)"
+            log("Не удалось выполнить просьбу про калибровку: \(message)")
+            lastError = message
+        }
+    }
+
+    /// Общее последствие перезапуска powerd: лимит ему нужно отдать заново,
+    /// и до тех пор расхождение — не повод дёргать адаптер.
+    private func calibrationRestarted() {
+        appliedLimit = nil
+        holdCeiling = nil
+        let now = Date()
+        limitWrittenAt = now
+        quietUntil = now.addingTimeInterval(Daemon.settleWindow)
+        mismatchSince = nil
+        nudgedThisMismatch = false
+    }
+
     /// Выполняет просьбу сменить режим энергии и гасит её.
     ///
     /// Режим не наш: его меняют и в Настройках, и в Пункте управления, и
@@ -249,6 +328,7 @@ final class Daemon {
         let effective: Bool     // держим ли зарядку на самом деле
         let settling: Bool      // команда отправлена, но ещё не применена
         var calibrating = false // macOS ведёт калибровочную зарядку до 100 %
+        var draining = false    // заряд выше порога, macOS сводит его к порогу
     }
 
     /// Приводит SMC к нужному состоянию и возвращает, что происходит на самом деле.
@@ -328,17 +408,58 @@ final class Daemon {
         // адаптер — тем более (powerd тут же продолжит зарядку, а мы лишь мигали
         // бы адаптером по кругу). Отступаем: заряд ведёт система, вернёмся к
         // удержанию, когда калибровка закончится.
+        if Date().timeIntervalSince(lastCalibrationCheck) >= Daemon.calibrationCheckInterval {
+            lastCalibrationCheck = Date()
+            calibrationControlAvailable = CalibrationControl.isAvailable
+        }
         let calibrating = SystemCalibration.chargingToFull
         if calibrating != lastCalibrating {
             log(calibrating
                 ? "macOS начала калибровочную зарядку до 100 % — отступаю, лимит сейчас держит система"
                 : "Калибровочная зарядка macOS завершена — возвращаюсь к удержанию заряда")
+            // Калибровка подняла заряд выше того потолка, на котором мы его
+            // держали. Держаться за старое число теперь нельзя: лимит ниже
+            // текущего заряда macOS понимает как просьбу разрядить батарею,
+            // а гнать заряд вниз мы не собирались — начинаем удержание заново,
+            // от того заряда, который есть.
+            if !calibrating {
+                postponeAttempts = 0
+                holdCeiling = nil
+                manualCalibration = false
+                manualCalibrationSince = nil
+            }
             lastCalibrating = calibrating
         }
+        // Если пользователь не хочет калибровку — отодвигаем её повод, пока
+        // заряд не успел уйти вверх.
+        // Позванная вручную калибровка успела не начаться — ждём её недолго,
+        // иначе настройка «не давать калибровать» осталась бы выключенной.
+        if let since = manualCalibrationSince, !calibrating,
+           Date().timeIntervalSince(since) > Daemon.manualCalibrationWait {
+            manualCalibration = false
+            manualCalibrationSince = nil
+            log("Позванная калибровка так и не началась — возвращаюсь к обычному поведению")
+        }
+        if calibrating && cfg.preventCalibration && !manualCalibration
+            && calibrationControlAvailable { postponeCalibration() }
 
         let shouldInhibit = !allowed
+        // Заряд выше порога — по умолчанию просто не подзаряжаем и ждём, пока
+        // он сойдёт вниз сам. Если же попросили возвращать его к порогу,
+        // лимит ставим ниже текущего заряда: это macOS понимает как просьбу
+        // свести заряд к нему и питает ноутбук от батареи прямо от адаптера.
+        let draining = shouldInhibit && cfg.dischargeToHigh && !calibrating
+            && bat.isPluggedIn && bat.percentage > cfg.high
+        if draining != lastDraining {
+            if draining {
+                log("Заряд \(bat.percentage)% выше порога \(cfg.high)% — прошу macOS вернуть его к порогу")
+            } else if lastDraining {
+                log("Заряд вернулся к порогу \(cfg.high)%")
+            }
+            lastDraining = draining
+        }
         let target: Int
-        if allowed {
+        if allowed || draining {
             holdCeiling = nil
             target = cfg.high
         } else {
@@ -373,7 +494,8 @@ final class Daemon {
         if mismatch {
             let since = mismatchSince ?? now
             mismatchSince = since
-            if !nudgedThisMismatch && now.timeIntervalSince(since) >= Daemon.nudgeDelay {
+            if !nudgedThisMismatch && now >= quietUntil
+                && now.timeIntervalSince(since) >= Daemon.nudgeDelay {
                 nudgedThisMismatch = true
                 do {
                     try controller.nudgeCharger()
@@ -394,7 +516,8 @@ final class Daemon {
                            // не выдаём удержание за действительное.
                            effective: shouldInhibit && !mismatch && !calibrating,
                            settling: mismatch && sinceWrite < Daemon.settleWindow,
-                           calibrating: calibrating && shouldInhibit)
+                           calibrating: calibrating && shouldInhibit,
+                           draining: draining)
     }
 
     /// Пишет лимит, если он отличается от нужного, и раз в несколько секунд
@@ -457,6 +580,36 @@ final class Daemon {
             let message = "\(error)"
             if lastError != message { log("Не удалось вернуть лимит macOS: \(message)") }
             lastError = message
+        }
+    }
+
+    /// Отменяет калибровочную зарядку macOS: сдвигает даты, по которым powerd
+    /// решил, что пора заряжать до 100 %, и перезапускает его (подробности —
+    /// в `CalibrationControl`).
+    private func postponeCalibration() {
+        let now = Date()
+        guard now.timeIntervalSince(lastPostpone) >= Daemon.postponeInterval else { return }
+        guard postponeAttempts < Daemon.postponeAttemptLimit else { return }
+        lastPostpone = now
+        postponeAttempts += 1
+        do {
+            try CalibrationControl.postpone()
+            log("macOS собралась калибровать батарею — отодвинул повод "
+                + "и перезапустил powerd (попытка \(postponeAttempts))")
+            lastError = nil
+            // powerd поднялся с чистого листа: лимит ему нужно отдать заново,
+            // а расхождение, пока он этого не сделал, — не повод дёргать
+            // адаптер. Иначе каждая отменённая калибровка кончалась бы
+            // переподключением питания на ровном месте.
+            calibrationRestarted()
+        } catch {
+            let message = "\(error)"
+            if lastError != message { log("Не удалось отменить калибровку: \(message)") }
+            lastError = message
+            if postponeAttempts >= Daemon.postponeAttemptLimit {
+                log("Калибровку отменить не удалось — больше не пробую, "
+                    + "заряд на это время ведёт система")
+            }
         }
     }
 
@@ -537,6 +690,9 @@ final class Daemon {
                             cycleCount: bat.cycleCount,
                             energyModes: energyModes,
                             magsafeLEDAvailable: controller.hasMagSafeLED,
+                            dischargeAvailable: controller.api == .macOSLimit,
+                            calibrating: SystemCalibration.chargingToFull,
+                            calibrationControl: calibrationControlAvailable,
                             error: lastError,
                             updatedAt: Date())
 
@@ -566,6 +722,11 @@ final class Daemon {
         // не применяет, и мы не мешаем. Честно называем, кто ведёт заряд.
         if state.calibrating {
             return .systemCalibrating
+        }
+        // Заряд сводится к порогу: это не «блокирую зарядку», а отдельное
+        // состояние — ноутбук идёт от батареи, хотя адаптер подключён.
+        if state.draining {
+            return .dischargingToHigh
         }
         // Контроллер применяет команду не сразу — не делаем вид, что уже готово.
         if state.settling {

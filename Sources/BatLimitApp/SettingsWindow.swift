@@ -18,6 +18,10 @@ protocol SettingsActions: AnyObject {
     func settingsSetLoginItem(_ enabled: Bool)
     func settingsOpenLoginItems()
     func settingsSetMagSafeLED(_ enabled: Bool)
+    func settingsSetDischargeToHigh(_ enabled: Bool)
+    func settingsSetPreventCalibration(_ enabled: Bool)
+    func settingsStopCalibration()
+    func settingsStartCalibration()
 
     var automaticallyChecksForUpdates: Bool { get set }
     var canCheckForUpdates: Bool { get }
@@ -31,6 +35,11 @@ final class SettingsModel: ObservableObject {
     @Published private(set) var loginNeedsApproval = false
     @Published private(set) var magsafeLED = true
     @Published private(set) var magsafeAvailable = true
+    @Published private(set) var dischargeToHigh = false
+    @Published private(set) var dischargeAvailable = true
+    @Published private(set) var preventCalibration = true
+    @Published private(set) var calibrating = false
+    @Published private(set) var calibrationControl = true
     @Published private(set) var api: String?
     @Published private(set) var autoUpdates = true
     @Published private(set) var canCheckForUpdates = true
@@ -81,6 +90,15 @@ final class SettingsModel: ObservableObject {
         // Пока служба молчит, о разъёме судить не по чему — не пугаем
         // пользователя надписью «нет MagSafe» на машине, где он есть.
         magsafeAvailable = status?.magsafeLEDAvailable ?? true
+        dischargeToHigh = cfg.dischargeToHigh
+        preventCalibration = cfg.preventCalibration
+        calibrating = status?.calibrating ?? false
+        // Пока служба молчит, о механизме судить не по чему — не пугаем
+        // надписью «не поддерживается» на системе, где всё работает.
+        calibrationControl = status?.calibrationControl ?? true
+        // Пока служба молчит, рычаг неизвестен — не объявляем возврат к порогу
+        // недоступным раньше времени.
+        dischargeAvailable = status?.dischargeAvailable ?? true
         api = live ? status?.api : nil
         autoUpdates = actions?.automaticallyChecksForUpdates ?? true
         canCheckForUpdates = actions?.canCheckForUpdates ?? false
@@ -95,6 +113,26 @@ final class SettingsModel: ObservableObject {
         magsafeLED = enabled
         actions?.settingsSetMagSafeLED(enabled)
     }
+
+    func setDischargeToHigh(_ enabled: Bool) {
+        dischargeToHigh = enabled
+        actions?.settingsSetDischargeToHigh(enabled)
+    }
+
+    func setPreventCalibration(_ enabled: Bool) {
+        preventCalibration = enabled
+        actions?.settingsSetPreventCalibration(enabled)
+    }
+
+    func stopCalibration() {
+        actions?.settingsStopCalibration()
+        refresh()
+    }
+
+    func startCalibration() {
+        actions?.settingsStartCalibration()
+        refresh()
+    }
 }
 
 struct SettingsView: View {
@@ -103,6 +141,7 @@ struct SettingsView: View {
     var body: some View {
         Form {
             generalSection
+            chargingSection
             magsafeSection
             updatesSection
             serviceSection
@@ -140,6 +179,39 @@ struct SettingsView: View {
                 get: { model.showBadge },
                 set: { model.showBadge = $0 }))
             Text(L("settings.showBadge.note"))
+                .font(.callout).foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: - Заряд
+
+    private var chargingSection: some View {
+        Section(L("settings.section.charging")) {
+            Toggle(L("settings.preventCalibration"), isOn: Binding(
+                get: { model.preventCalibration },
+                set: { model.setPreventCalibration($0) }))
+                .disabled(!model.live || !model.calibrationControl)
+            Text(model.calibrationControl ? L("settings.preventCalibration.note")
+                                          : L("settings.calibration.unavailable"))
+                .font(.callout).foregroundStyle(.secondary)
+
+            if model.calibrationControl {
+                HStack {
+                    Button(L("settings.calibration.stop")) { model.stopCalibration() }
+                        .disabled(!model.live || !model.calibrating)
+                    Button(L("settings.calibration.start")) { model.startCalibration() }
+                        .disabled(!model.live || model.calibrating)
+                }
+                Text(L("settings.calibration.actions.note"))
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+
+            Toggle(L("settings.dischargeToHigh"), isOn: Binding(
+                get: { model.dischargeToHigh },
+                set: { model.setDischargeToHigh($0) }))
+                .disabled(!model.dischargeAvailable || !model.live)
+            Text(model.dischargeAvailable ? L("settings.dischargeToHigh.note")
+                                          : L("settings.dischargeToHigh.unavailable"))
                 .font(.callout).foregroundStyle(.secondary)
         }
     }

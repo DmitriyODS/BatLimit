@@ -7,7 +7,7 @@ import Foundation
 /// подбирает тот, кто показывает — приложение из своих переводов, CLI из
 /// `russian(_:)` ниже.
 public enum PhaseKind: String, Codable {
-    case noController      // ни SMC-ключей, ни лимита macOS — управлять нечем
+    case noController      // ни SMC-ключей, ни лимита прошивки, ни лимита macOS — управлять нечем
     case releasing         // снимаем блокировку, контроллер ещё не применил
     case inhibiting        // выставляем блокировку, контроллер ещё не применил
     case systemLimitHolds  // зарядку держит чужой лимит macOS

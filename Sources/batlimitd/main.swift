@@ -85,8 +85,9 @@ final class Daemon {
     /// и лимит ему нужно отдать заново, на это уходит до минуты.
     private var quietUntil = Date.distantPast
     /// Умеет ли эта версия macOS то, чем мы отменяем калибровку. Спрашиваем
-    /// редко: ответ меняется разве что с обновлением системы.
-    private var calibrationControlAvailable = CalibrationControl.isAvailable
+    /// редко: ответ меняется разве что с обновлением системы. Выставляется
+    /// в `init`, когда уже известен рычаг.
+    private var calibrationControlAvailable = false
     private var lastCalibrationCheck = Date()
     private static let calibrationCheckInterval: TimeInterval = 3600
     /// Калибровку позвал сам пользователь — значит отменять её не надо,
@@ -108,12 +109,24 @@ final class Daemon {
     /// Как часто сверяться с агентом: лимит могут поменять в Настройках.
     private static let limitCheckInterval: TimeInterval = 5
 
+    // MARK: Лимит прошивки (api == .firmwareLimit)
+
+    /// Коридор, записанный в прошивку в последний раз. `holdCeiling`,
+    /// `lastLimitAllowed` и `lastLimitCheck` — общие с лимитом macOS.
+    private var appliedFirmwareLimit: FirmwareLimit?
+    /// Лимит снят нами и с тех пор не ставился — снимать снова незачем.
+    private var firmwareReleased = false
+    /// После отказа SMC не повторяем запись раньше этого момента.
+    private var firmwareRetryAt = Date.distantPast
+    private static let firmwareRetryInterval: TimeInterval = 30
+
     init() throws {
         controller = try ChargingController()
+        calibrationControlAvailable = calibrationControlSupported
         log("Запуск. Управление зарядкой: \(controller.api.rawValue)")
         switch controller.api {
         case .unknown:
-            log("ВНИМАНИЕ: ни SMC-ключей, ни лимита macOS нет, управлять зарядкой не смогу")
+            log("ВНИМАНИЕ: ни SMC-ключей, ни лимита прошивки, ни лимита macOS нет, управлять зарядкой не смогу")
         case .macOSLimit:
             let agent = controller.systemLimit?.agentLimit().map { "\($0)%" } ?? "не отвечает"
             log("Лимит macOS сейчас: \(agent)"
@@ -121,6 +134,11 @@ final class Daemon {
             if controller.resetAdapterIfDisabled() {
                 log("Адаптер был отключён ключом CHIE — включён обратно")
             }
+        case .firmwareLimit:
+            // Лимит прошивки мог пережить прошлый запуск службы: скажем, какой.
+            let current = controller.firmwareLimit()
+                .map { "\($0.lower)–\($0.upper)%" } ?? "выключен"
+            log("Лимит прошивки сейчас: \(current)")
         case .tahoe, .legacy:
             break
         }
@@ -149,9 +167,12 @@ final class Daemon {
         lastMode = cfg.mode
 
         let allowed = decide(cfg: cfg, battery: bat)
-        let state = controller.api == .macOSLimit
-            ? applySystemLimit(allowed: allowed, cfg: cfg, battery: bat)
-            : apply(allowed: allowed, battery: bat)
+        let state: ChargeState
+        switch controller.api {
+        case .macOSLimit:    state = applySystemLimit(allowed: allowed, cfg: cfg, battery: bat)
+        case .firmwareLimit: state = applyFirmwareLimit(allowed: allowed, cfg: cfg, battery: bat)
+        case .tahoe, .legacy, .unknown: state = apply(allowed: allowed, battery: bat)
+        }
         // Во время калибровки зелёный «удерживаю» неуместен — батарея реально
         // заряжается, пусть светодиод показывает это по-системному.
         applyLED(cfg: cfg, requested: state.requested && !state.calibrating, battery: bat)
@@ -223,6 +244,12 @@ final class Daemon {
         try? cfg.save()
         restoreConfigOwnership()
 
+        // И «остановить», и «откалибровать» перезапускают powerd.
+        guard calibrationControlAvailable else {
+            log("Просьба про калибровку не выполнена: на этой системе BatLimit калибровкой не управляет")
+            return
+        }
+
         do {
             switch request {
             case .stop:
@@ -257,6 +284,7 @@ final class Daemon {
     /// и до тех пор расхождение — не повод дёргать адаптер.
     private func calibrationRestarted() {
         appliedLimit = nil
+        appliedFirmwareLimit = nil
         holdCeiling = nil
         let now = Date()
         limitWrittenAt = now
@@ -408,40 +436,7 @@ final class Daemon {
         // адаптер — тем более (powerd тут же продолжит зарядку, а мы лишь мигали
         // бы адаптером по кругу). Отступаем: заряд ведёт система, вернёмся к
         // удержанию, когда калибровка закончится.
-        if Date().timeIntervalSince(lastCalibrationCheck) >= Daemon.calibrationCheckInterval {
-            lastCalibrationCheck = Date()
-            calibrationControlAvailable = CalibrationControl.isAvailable
-        }
-        let calibrating = SystemCalibration.chargingToFull
-        if calibrating != lastCalibrating {
-            log(calibrating
-                ? "macOS начала калибровочную зарядку до 100 % — отступаю, лимит сейчас держит система"
-                : "Калибровочная зарядка macOS завершена — возвращаюсь к удержанию заряда")
-            // Калибровка подняла заряд выше того потолка, на котором мы его
-            // держали. Держаться за старое число теперь нельзя: лимит ниже
-            // текущего заряда macOS понимает как просьбу разрядить батарею,
-            // а гнать заряд вниз мы не собирались — начинаем удержание заново,
-            // от того заряда, который есть.
-            if !calibrating {
-                postponeAttempts = 0
-                holdCeiling = nil
-                manualCalibration = false
-                manualCalibrationSince = nil
-            }
-            lastCalibrating = calibrating
-        }
-        // Если пользователь не хочет калибровку — отодвигаем её повод, пока
-        // заряд не успел уйти вверх.
-        // Позванная вручную калибровка успела не начаться — ждём её недолго,
-        // иначе настройка «не давать калибровать» осталась бы выключенной.
-        if let since = manualCalibrationSince, !calibrating,
-           Date().timeIntervalSince(since) > Daemon.manualCalibrationWait {
-            manualCalibration = false
-            manualCalibrationSince = nil
-            log("Позванная калибровка так и не началась — возвращаюсь к обычному поведению")
-        }
-        if calibrating && cfg.preventCalibration && !manualCalibration
-            && calibrationControlAvailable { postponeCalibration() }
+        let calibrating = updateCalibration(cfg: cfg)
 
         let shouldInhibit = !allowed
         // Заряд выше порога — по умолчанию просто не подзаряжаем и ждём, пока
@@ -579,6 +574,180 @@ final class Daemon {
         } catch {
             let message = "\(error)"
             if lastError != message { log("Не удалось вернуть лимит macOS: \(message)") }
+            lastError = message
+        }
+    }
+
+    /// Можно ли здесь отменять и звать калибровку.
+    ///
+    /// Отмена перезапускает powerd, а проверена она только на macOS 27 —
+    /// с лимитом macOS. Лимит прошивки живёт на Sequoia, где это не проверено,
+    /// и перезапускать системную службу вслепую мы не станем: калибровке
+    /// там BatLimit не мешает, а на время её просто отступает.
+    private var calibrationControlSupported: Bool {
+        controller.api != .firmwareLimit && CalibrationControl.isAvailable
+    }
+
+    /// Следит за калибровочной зарядкой macOS и возвращает, идёт ли она.
+    ///
+    /// Общее для рычагов-потолков (лимит macOS и лимит прошивки): пишет в журнал
+    /// вход и выход, по окончании начинает удержание заново и, если
+    /// пользователь не хочет калибровку, отодвигает её повод.
+    private func updateCalibration(cfg: Config) -> Bool {
+        if Date().timeIntervalSince(lastCalibrationCheck) >= Daemon.calibrationCheckInterval {
+            lastCalibrationCheck = Date()
+            calibrationControlAvailable = calibrationControlSupported
+        }
+        let calibrating = SystemCalibration.chargingToFull
+        if calibrating != lastCalibrating {
+            log(calibrating
+                ? "macOS начала калибровочную зарядку до 100 % — отступаю, лимит сейчас держит система"
+                : "Калибровочная зарядка macOS завершена — возвращаюсь к удержанию заряда")
+            // Калибровка подняла заряд выше того потолка, на котором мы его
+            // держали. Держаться за старое число теперь нельзя: лимит ниже
+            // текущего заряда macOS понимает как просьбу разрядить батарею,
+            // а гнать заряд вниз мы не собирались — начинаем удержание заново,
+            // от того заряда, который есть.
+            if !calibrating {
+                postponeAttempts = 0
+                holdCeiling = nil
+                manualCalibration = false
+                manualCalibrationSince = nil
+            }
+            lastCalibrating = calibrating
+        }
+        // Позванная вручную калибровка успела не начаться — ждём её недолго,
+        // иначе настройка «не давать калибровать» осталась бы выключенной.
+        if let since = manualCalibrationSince, !calibrating,
+           Date().timeIntervalSince(since) > Daemon.manualCalibrationWait {
+            manualCalibration = false
+            manualCalibrationSince = nil
+            log("Позванная калибровка так и не началась — возвращаюсь к обычному поведению")
+        }
+        // Если пользователь не хочет калибровку — отодвигаем её повод, пока
+        // заряд не успел уйти вверх.
+        if calibrating && cfg.preventCalibration && !manualCalibration
+            && calibrationControlAvailable { postponeCalibration() }
+        return calibrating
+    }
+
+    // MARK: Лимит прошивки (api == .firmwareLimit)
+
+    /// То же, что `applySystemLimit`, но потолок держит сама прошивка SMC
+    /// (`bfF0`/`bfD0`/`bfE0`), без powerd и PowerUIAgent.
+    ///
+    /// Решение переводится в коридор так же: можно заряжать — верхний порог на
+    /// `high`; нельзя — на текущем заряде (`holdCeiling`, только опускается).
+    /// Коридор держит прошивка, а не мы, поэтому он работает и во сне: «можно
+    /// заряжать» не значит «заряжать до 100 %, пока служба спит».
+    ///
+    /// Факт — по биту 55 в `NotChargingReason`, как у `CHTE`; контроллер
+    /// применяет новый коридор не сразу, замерено около минуты.
+    private func applyFirmwareLimit(allowed: Bool, cfg: Config, battery bat: BatteryInfo) -> ChargeState {
+        if cfg.mode == .off && !oneShot {
+            releaseFirmwareLimit()
+            return ChargeState(requested: false, effective: false, settling: false)
+        }
+        // Снимает ли powerd на калибровку лимит прошивки, на Sequoia не
+        // проверено. Пока флаг поднят, коридор не переписываем — не спорим
+        // с системой; а «macOS калибрует» показываем, только если батарея
+        // и правда заряжается.
+        let calibrationRequested = updateCalibration(cfg: cfg)
+        let calibrating = calibrationRequested && bat.isPluggedIn && bat.isCharging
+
+        let shouldInhibit = !allowed
+        if requestedInhibit != shouldInhibit {
+            requestedInhibit = shouldInhibit
+            requestChangedAt = Date()
+        }
+
+        let target: FirmwareLimit
+        if allowed {
+            holdCeiling = nil
+            target = .holding(at: cfg.high)
+        } else {
+            let ceiling = min(holdCeiling ?? bat.percentage, bat.percentage)
+            holdCeiling = ceiling
+            target = .holding(at: ceiling)
+        }
+        if !calibrationRequested { enforceFirmwareLimit(target, allowed: allowed) }
+
+        // Без адаптера `NotChargingReason` залипает на последнем значении.
+        let effective = bat.isPluggedIn ? bat.ourInhibitActive : shouldInhibit
+        let settling = effective != shouldInhibit
+            && Date().timeIntervalSince(requestChangedAt) < Daemon.settleWindow
+        return ChargeState(requested: shouldInhibit,
+                           effective: effective && !calibrating,
+                           settling: settling && !calibrating,
+                           calibrating: calibrating && shouldInhibit)
+    }
+
+    /// Пишет коридор, если он отличается от нужного, и раз в несколько секунд
+    /// сверяет его с прошивкой: после сна или чужой записи он мог смениться.
+    private func enforceFirmwareLimit(_ target: FirmwareLimit, allowed: Bool) {
+        let now = Date()
+        var drift: String?
+        if appliedFirmwareLimit == target {
+            guard now.timeIntervalSince(lastLimitCheck) >= Daemon.limitCheckInterval else { return }
+            lastLimitCheck = now
+            let actual = controller.firmwareLimit()
+            guard actual != target else { return }
+            drift = actual.map { "коридор сменили в обход BatLimit (\($0.lower)–\($0.upper)%)" }
+                ?? "лимит сняли в обход BatLimit"
+        } else if now < firmwareRetryAt {
+            return
+        }
+
+        do {
+            try controller.setFirmwareLimit(target)
+            lastError = nil
+        } catch {
+            // Отказ на каждом тике — это запись в SMC раз в секунду и строка
+            // в журнале раз в секунду. Повторяем реже и пишем только новое.
+            firmwareRetryAt = now.addingTimeInterval(Daemon.firmwareRetryInterval)
+            appliedFirmwareLimit = nil
+            let message = "\(error)"
+            if lastError != message { log("Ошибка лимита прошивки: \(message)") }
+            lastError = message
+            return
+        }
+
+        let range = "\(target.lower)–\(target.upper)%"
+        if let drift {
+            log("Лимит прошивки: \(range) — \(drift)")
+        } else if lastLimitAllowed != allowed {
+            // Потолок удержания ползёт вниз вместе с зарядом на батарее —
+            // это не событие, в журнал пишем только смену решения.
+            log(allowed ? "Лимит прошивки: \(range) — зарядка разрешена до верхнего порога"
+                        : "Лимит прошивки: \(range) — зарядка остановлена на текущем заряде, "
+                          + "контроллер применит в течение ~минуты")
+        }
+        lastLimitAllowed = allowed
+        appliedFirmwareLimit = target
+        firmwareReleased = false
+        lastLimitCheck = now
+    }
+
+    /// Снимает лимит прошивки: «заряжать как обычно» — это обычная зарядка
+    /// до 100 %, без нашего коридора.
+    private func releaseFirmwareLimit() {
+        holdCeiling = nil
+        lastLimitAllowed = nil
+        appliedFirmwareLimit = nil
+        guard !firmwareReleased else { return }
+        // Снимать нечего — например, служба только запустилась в режиме «выключено».
+        guard controller.firmwareLimit() != nil else {
+            firmwareReleased = true
+            return
+        }
+        do {
+            try controller.clearFirmwareLimit()
+            firmwareReleased = true
+            log("Лимит прошивки снят — зарядка как обычно")
+            lastError = nil
+        } catch {
+            let message = "\(error)"
+            if lastError != message { log("Не удалось снять лимит прошивки: \(message)") }
             lastError = message
         }
     }
@@ -778,6 +947,10 @@ final class Daemon {
         case .macOSLimit:
             _ = controller.resetAdapterIfDisabled()
             if let limit = controller.systemLimit { releaseSystemLimit(limit) }
+        case .firmwareLimit:
+            // Коридор держит прошивка и без нас — оставь его, и после удаления
+            // службы батарея так и не зарядилась бы выше порога.
+            try? controller.clearFirmwareLimit()
         case .unknown:
             break
         }

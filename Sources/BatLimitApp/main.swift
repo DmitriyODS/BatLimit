@@ -476,14 +476,19 @@ final class MenuController: NSObject, NSApplicationDelegate, NSMenuDelegate, Set
             return
         }
 
-        titleItem.title = L("menu.title", st.percentage,
-                            st.isPluggedIn ? L("source.ac") : L("source.battery"))
+        // «от сети» само по себе не говорит, идёт ли зарядка, — а после снятия
+        // блокировки именно это и хочется увидеть.
+        let source = !st.isPluggedIn ? L("source.battery")
+            : st.isCharging ? L("source.acCharging") : L("source.ac")
+        titleItem.title = L("menu.title", st.percentage, source)
+        phaseItem.toolTip = nil
         if !live {
             phaseItem.title = starting ? L("menu.service.starting") : L("menu.service.silent")
         } else if let err = st.error {
             phaseItem.title = L("menu.error", err)
         } else {
             phaseItem.title = st.localizedPhase
+            phaseItem.toolTip = st.phaseKind?.localizedHint
         }
 
         // Системный лимит macOS — независимый от нас замок: он держит зарядку

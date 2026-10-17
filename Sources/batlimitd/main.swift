@@ -701,6 +701,11 @@ final class Daemon {
         do {
             try controller.setFirmwareLimit(target)
             lastError = nil
+            // Новый коридор — новая команда контроллеру, и применит он её не
+            // сразу: с этого момента и считаем окно «применяется…». Иначе после
+            // «выключено → авто» решение «держать» совпало бы с прежним, отсчёт
+            // не начался бы, и минута законной задержки выглядела бы аномалией.
+            requestChangedAt = now
         } catch {
             // Отказ на каждом тике — это запись в SMC раз в секунду и строка
             // в журнале раз в секунду. Повторяем реже и пишем только новое.
@@ -734,6 +739,7 @@ final class Daemon {
         holdCeiling = nil
         lastLimitAllowed = nil
         appliedFirmwareLimit = nil
+        requestedInhibit = nil
         guard !firmwareReleased else { return }
         // Снимать нечего — например, служба только запустилась в режиме «выключено».
         guard controller.firmwareLimit() != nil else {

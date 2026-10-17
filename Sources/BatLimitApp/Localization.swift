@@ -36,6 +36,16 @@ extension PhaseKind {
         case .daemonStopped:    return L("phase.daemonStopped")
         }
     }
+
+    /// Пояснение к фазе — во всплывающую подсказку. В саму строку меню оно
+    /// не помещается: самая длинная строка задаёт ширину всего меню.
+    var localizedHint: String? {
+        switch self {
+        case .releasing, .inhibiting: return L("phase.settling.hint")
+        case .inhibitIgnored:         return L("phase.inhibitIgnored.hint")
+        default:                      return nil
+        }
+    }
 }
 
 extension Status {

@@ -3,15 +3,18 @@
 /* Power source — substituted into the state phrases */
 "source.ac" = "on AC power";
 "source.battery" = "on battery";
+"source.acCharging" = "on AC power, charging";
 
 /* What the service is doing with charging right now */
 "phase.noController" = "no way to control charging";
-"phase.releasing" = "%@, lifting the hold — applying…";
-"phase.inhibiting" = "%@, holding charging — applying…";
+"phase.releasing" = "%@, allowing charging…";
+"phase.inhibiting" = "%@, stopping charging…";
+"phase.settling.hint" = "The charge controller doesn't apply the command right away — usually within a minute.";
 "phase.systemLimitHolds" = "on AC power, charging held by the macOS limit";
 "phase.systemCalibrating" = "on AC power, macOS is calibrating the battery — charging to 100%";
 "phase.dischargingToHigh" = "on AC power, bringing the charge back to %d%% — running off the battery";
-"phase.inhibitIgnored" = "on AC power, charging anyway despite the hold";
+"phase.inhibitIgnored" = "on AC power, hold not applied yet";
+"phase.inhibitIgnored.hint" = "The charging hold is set, but the controller hasn't applied it in a minute and a half — longer than usual. Reconnecting the cable usually helps.";
 "phase.oneShot" = "%1$@, charging to %2$d%% (one time)";
 "phase.notManaging" = "%@, not interfering";
 "phase.blocked" = "%@, charging held";

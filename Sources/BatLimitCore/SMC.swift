@@ -129,6 +129,12 @@ public final class SMC {
         (try? keyInfo(key)) != nil
     }
 
+    /// Ключ есть и за ним лежат данные. Убранные из прошивки ключи иногда
+    /// остаются в таблице заглушками нулевого размера.
+    public func hasData(_ key: String) -> Bool {
+        ((try? keyInfo(key))?.size ?? 0) > 0
+    }
+
     // MARK: - Внутреннее
 
     private func makeInput(_ key: String) throws -> [UInt8] {

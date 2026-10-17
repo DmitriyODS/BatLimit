@@ -7,7 +7,7 @@ import Foundation
 /// подбирает тот, кто показывает — приложение из своих переводов, CLI из
 /// `russian(_:)` ниже.
 public enum PhaseKind: String, Codable {
-    case noController      // ни SMC-ключей, ни лимита macOS — управлять нечем
+    case noController      // ни SMC-ключей, ни лимита прошивки, ни лимита macOS — управлять нечем
     case releasing         // снимаем блокировку, контроллер ещё не применил
     case inhibiting        // выставляем блокировку, контроллер ещё не применил
     case systemLimitHolds  // зарядку держит чужой лимит macOS
@@ -26,12 +26,12 @@ public enum PhaseKind: String, Codable {
         let source = plugged ? "от сети" : "от батареи"
         switch self {
         case .noController:     return "нечем управлять зарядкой"
-        case .releasing:        return "\(source), снимаю блокировку — применяется…"
-        case .inhibiting:       return "\(source), блокирую зарядку — применяется…"
+        case .releasing:        return "\(source), разрешаю зарядку…"
+        case .inhibiting:       return "\(source), останавливаю зарядку…"
         case .systemLimitHolds: return "от сети, зарядку держит системный лимит macOS"
         case .systemCalibrating: return "от сети, macOS калибрует батарею — заряжает до 100 %"
         case .dischargingToHigh: return "от сети, возвращаю заряд к \(high)% — macOS питает ноутбук от батареи"
-        case .inhibitIgnored:   return "от сети, зарядка идёт, хотя запрет выставлен"
+        case .inhibitIgnored:   return "от сети, запрет пока не сработал"
         case .oneShot:          return "\(source), заряжаю до \(high)% (разово)"
         case .notManaging:      return "\(source), не вмешиваюсь"
         case .blocked:          return "\(source), зарядка заблокирована"
